@@ -13,8 +13,8 @@ router = APIRouter()
 
 # --- Pydantic Models ---
 class SettingUpdate(BaseModel):
-    access_key_id: str
-    access_key_secret: str
+    access_key_id: Optional[str] = None
+    access_key_secret: Optional[str] = None
     region_id: str = "cn-hangzhou"
     tencent_secret_id: Optional[str] = None
     tencent_secret_key: Optional[str] = None
