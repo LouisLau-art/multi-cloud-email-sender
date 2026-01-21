@@ -2,9 +2,17 @@ fastapi
 uvicorn
 sqlalchemy
 pydantic
+# 阿里云新版 SDK
 alibabacloud_dm20151123
 alibabacloud_tea_openapi
+# 阿里云旧版 SDK (确保兼容性)
+aliyun-python-sdk-core
+aliyun-python-sdk-dm
+# 腾讯云 SDK (报错缺失的就是这个)
+tencentcloud-sdk-python
 apscheduler
 python-multipart
 pandas
 requests
+openpyxl
+# 解决可能的 Excel/CSV 读取问题
