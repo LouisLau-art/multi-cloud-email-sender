@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col } from 'antd';
 import { UploadOutlined, UserOutlined, MailOutlined, SettingOutlined, RocketOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
-import api from './services/api';
+import api, { contactApi } from './services/api';
 import dayjs from 'dayjs';
 
 const { Header, Content, Sider } = Layout;
@@ -61,16 +61,17 @@ const Contacts = () => {
   const uploadProps = {
     name: 'file',
     customRequest: async (options) => {
-      const formData = new FormData();
-      formData.append('file', options.file);
-      formData.append('list_name', options.file.name.split('.')[0]); 
       try {
-        await api.post('/contacts/upload', formData);
+        // 使用文件名作为列表名
+        const listName = options.file.name.split('.')[0];
+        // 调用封装好的上传方法，它会自动处理 FormData 和 list_name
+        await contactApi.upload(options.file, listName);
         message.success('上传成功');
         refresh();
         options.onSuccess();
       } catch (e) {
-        message.error('上传失败');
+        console.error(e);
+        message.error('上传失败: ' + (e.response?.data?.detail || e.message));
         options.onError();
       }
     }

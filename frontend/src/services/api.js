@@ -26,9 +26,10 @@ export const campaignApi = {
 
 export const contactApi = {
     getAll: () => api.get('/contacts'),
-    upload: (file) => {
+    upload: (file, listName) => {
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('list_name', listName || file.name); // 必填：列表名称，默认使用文件名
         return api.post('/contacts/upload', formData, {
             headers: { 'Content-Type': 'multipart/form-data' },
         });
