@@ -19,36 +19,46 @@ A robust, enterprise-grade email marketing solution designed for non-technical u
 *   **Frontend**: React (Vite, Ant Design)
 *   **Database**: SQLite (Zero-config, portable)
 
-## ⚡️ Quick Start
+## 📦 Deployment Guide
 
-### Prerequisites
-*   Python 3.10+
-*   Node.js 18+
+You can run this project directly from source (Development Mode) or package it into a standalone executable (Production Mode).
 
-### Installation
+### Option A: Run from Source (Recommended for Devs)
 
-1.  **Clone the repository**
-    ```bash
-    git clone https://github.com/your-username/multi-cloud-email-sender.git
-    cd multi-cloud-email-sender
-    ```
+Requires **Python 3.10+** and **Node.js 18+**.
 
-2.  **Install Dependencies**
-    ```bash
-    # Backend
-    pip install -r backend/requirements.txt
-    
-    # Frontend
-    cd frontend
-    npm install
-    cd ..
-    ```
+**Linux / macOS:**
+```bash
+# 1. Clone & Install
+git clone https://github.com/LouisLau-art/multi-cloud-email-sender.git
+cd multi-cloud-email-sender
 
-3.  **Run the Application**
-    ```bash
-    ./start.sh
-    ```
-    Access the UI at `http://localhost:5173`.
+# 2. Start
+./start.sh
+```
+
+**Windows:**
+1.  Double-click `start.bat`.
+2.  The script will install dependencies and launch both backend and frontend servers.
+
+### Option B: Build Standalone Executable (Recommended for End Users)
+
+You can package the entire application (Backend + Frontend + Python Runtime) into a single executable file. No installation required for the end user.
+
+**Build for Linux:**
+```bash
+./build_linux.sh
+```
+*   Output: `dist/EmailSender_Linux`
+*   Usage: `./dist/EmailSender_Linux` then open `http://localhost:8000`
+
+**Build for Windows:**
+1.  Double-click `build_windows.bat`.
+2.  Wait for the process to finish.
+3.  Output: `dist\EmailSender\EmailSender.exe`
+4.  Usage: Send the `dist\EmailSender` folder to your user. They just need to run `EmailSender.exe`.
+
+---
 
 ## 📖 User Guide
 

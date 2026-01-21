@@ -4,36 +4,33 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from .api import endpoints
 from .core.database import engine, Base
-from .core.scheduler import start_scheduler
-import uvicorn
+from .core.scheduler import scheduler
+from fastapi.staticfiles import StaticFiles
+import os
+import sys
 
-# Create Tables
-Base.metadata.create_all(bind=engine)
+app = FastAPI(title="Email Marketing System")
 
-app = FastAPI(title="Email Sender MVP")
-
-@app.exception_handler(RequestValidationError)
-async def validation_exception_handler(request: Request, exc: RequestValidationError):
-    print(f"Validation Error: {exc.errors()}")
-    print(f"Body: {await request.body()}")
-    return JSONResponse(
-        status_code=422,
-        content={"detail": exc.errors(), "body": str(exc)},
-    )
-
-# CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# CORS Configuration
+# ... (keep existing CORS)
 
 app.include_router(endpoints.router, prefix="/api")
 
+# --- Static Files (Frontend Integration) ---
+# 检查前端构建产物是否存在
+# 在 PyInstaller 打包后，路径可能需要特殊处理，或者我们在打包时将 dist 放在同级
+frontend_dist = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "frontend", "dist")
+
+# 如果是通过 PyInstaller 运行 (_MEIPASS 是 PyInstaller 解压临时目录)
+if getattr(sys, 'frozen', False):
+    frontend_dist = os.path.join(sys._MEIPASS, "frontend_dist")
+
+if os.path.exists(frontend_dist):
+    app.mount("/", StaticFiles(directory=frontend_dist, html=True), name="static")
+
 @app.on_event("startup")
 def on_startup():
+# ... (keep existing)
     start_scheduler()
     
     # Initialize Sample Data

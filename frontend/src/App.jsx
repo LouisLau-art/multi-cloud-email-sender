@@ -295,7 +295,7 @@ const Campaigns = () => {
               </Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="from_alias" label="本次任务昵称" tooltip="留空则使用模板设置或全局设置"><Input placeholder="例如：促销小助手" /></Form.Item>
+              <Form.Item name="from_alias" label="本次任务发信人昵称" tooltip="留空则使用模板设置或全局设置"><Input placeholder="例如：促销小助手" /></Form.Item>
             </Col>
           </Row>
           
