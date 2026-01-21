@@ -4,8 +4,6 @@ sqlalchemy
 pydantic
 alibabacloud_dm20151123
 alibabacloud_tea_openapi
-aliyun-python-sdk-core
-aliyun-python-sdk-dm
 tencentcloud-sdk-python
 apscheduler
 python-multipart
