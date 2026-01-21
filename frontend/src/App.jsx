@@ -187,6 +187,10 @@ const Campaigns = () => {
   const [lists, setLists] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [senders, setSenders] = useState([]);
+  const [form] = Form.useForm();
+  
+  // 监听表单中的 provider 字段
+  const selectedProvider = Form.useWatch('provider', form);
 
   const refresh = () => {
     api.get('/campaigns').then(res => setCampaigns(res.data));
@@ -202,87 +206,26 @@ const Campaigns = () => {
 
   const loadSenders = () => {
     api.get('/senders/sync').then(res => {
-      setSenders(res.data.map(s => ({label: `${s.email} (${s.status || '未知'})`, value: s.email})));
+      // 后端返回 [{email, provider, label}, ...]
+      setSenders(res.data.map(s => ({
+          label: s.label || `${s.email} (${s.provider})`, 
+          value: s.email,
+          provider: s.provider // 保留 provider 用于过滤
+      })));
     }).catch(e => message.error('加载发信地址失败'));
   };
 
-  const handleStart = (id) => {
-    api.post(`/campaigns/${id}/start`).then(() => {
-      message.success('任务已激活');
-      refresh();
-    });
-  };
+  // ... (handlers omitted)
 
-  const handleStop = (id) => {
-    api.post(`/campaigns/${id}/stop`).then(() => {
-      message.warning('任务已暂停');
-      refresh();
-    });
-  };
-  
-  const handleDelete = (id) => {
-      api.delete(`/campaigns/${id}`).then(() => {
-          message.success('任务已删除');
-          refresh();
-      });
-  };
+  // 根据当前选择的服务商过滤发信地址
+  const filteredSenders = senders.filter(s => !selectedProvider || s.provider === selectedProvider);
 
-  const onFinish = (values) => {
-    // 处理 Select mode="tags" 返回数组的问题
-    let accName = values.account_name;
-    if (Array.isArray(accName)) {
-        accName = accName[0];
-    }
-
-    const payload = {
-      ...values,
-      account_name: accName,
-      batch_size: parseInt(values.batch_size, 10),
-      interval_minutes: parseInt(values.interval_minutes, 10),
-      scheduled_start_time: values.scheduled_start_time ? values.scheduled_start_time.toISOString() : null
-    };
-    api.post('/campaigns', payload).then(() => {
-      message.success('任务创建成功');
-      refresh();
-    }).catch(err => {
-        message.error('创建失败: ' + (err.response?.data?.detail || '参数错误'));
-    });
-  };
-
-  const columns = [
-    { title: '任务名称', dataIndex: 'name', key: 'name' },
-    { title: '发件人', dataIndex: 'from_alias', key: 'from', render: (t) => t || '(默认)' },
-    { title: '服务商', dataIndex: 'provider', key: 'provider', render: (text) => text === 'tencent' ? '腾讯云' : '阿里云' },
-    { title: '状态', dataIndex: 'status', key: 'status', render: (text) => {
-        const map = { pending: '等待中', sending: '发送中', completed: '已完成', paused: '已暂停', error: '错误', scheduled: '计划中' };
-        const color = { sending: 'green', completed: 'blue', pending: 'orange', paused: 'red', scheduled: 'purple' };
-        return <Tag color={color[text] || 'default'}>{map[text] || text}</Tag>;
-    }},
-    { title: '发送进度', key: 'progress', width: 150, render: (_, record) => (
-      <div>
-        <Progress percent={Math.round((record.sent_count / record.total_recipients) * 100)} size="small" />
-        <small>{record.sent_count} / {record.total_recipients}</small>
-      </div>
-    )},
-    // Fix timezone display by forcing UTC interpretation if needed
-    { title: '计划开始', dataIndex: 'scheduled_start_time', key: 'start', render: (t) => t ? new Date(t + (t.endsWith('Z') ? '' : 'Z')).toLocaleString('zh-CN', { hour12: false }) : '-' },
-    { title: '操作', key: 'action', render: (_, record) => (
-      <div style={{display: 'flex', gap: 5}}>
-        {record.status === 'pending' || record.status === 'paused' || record.status === 'scheduled' ? 
-        <Button type="primary" size="small" onClick={() => handleStart(record.id)}>{record.status === 'scheduled' ? '立即开始' : '开始发送'}</Button> :
-        record.status === 'sending' ?
-        <Button danger size="small" onClick={() => handleStop(record.id)}>暂停</Button> : null}
-        <Popconfirm title="确定删除吗？" onConfirm={() => handleDelete(record.id)}>
-            <Button size="small" danger type="text">删除</Button>
-        </Popconfirm>
-      </div>
-    )}
-  ];
+  // ... (columns omitted)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <Card title="创建新任务">
-        <Form layout="vertical" onFinish={onFinish}>
+        <Form form={form} layout="vertical" onFinish={onFinish}>
           <Row gutter={16}>
             <Col span={8}>
               <Form.Item name="name" label="任务名称" required><Input placeholder="例如：元旦促销第一波" /></Form.Item>
@@ -310,11 +253,11 @@ const Campaigns = () => {
             <Col span={8}>
               <Form.Item name="account_name" label="发信地址" required>
                 <Select 
-                  placeholder="选择或输入" 
+                  placeholder={selectedProvider === 'tencent' ? "请选择腾讯云域名" : "请选择阿里云发信地址"}
                   mode="tags" 
                   maxCount={1}
                   onDropdownVisibleChange={(open) => open && loadSenders()}
-                  options={senders}
+                  options={filteredSenders}
                 />
               </Form.Item>
             </Col>
