@@ -121,41 +121,87 @@ def sync_templates(db: Session = Depends(get_db)):
     if not setting:
         raise HTTPException(status_code=400, detail="请先在设置中配置 AccessKey")
     
-    try:
-        client = AliyunService.create_client(setting.access_key_id, setting.access_key_secret, setting.region_id)
-        res = AliyunService.query_templates(client)
-        al_templates = res.body.data.template
-        
-        if not al_templates:
-            return {"message": "阿里云上没有发现模板"}
+    messages = []
+    
+    # --- 1. Aliyun Sync ---
+    if setting.access_key_id and setting.access_key_secret:
+        try:
+            client = AliyunService.create_client(setting.access_key_id, setting.access_key_secret, setting.region_id)
+            res = AliyunService.query_templates(client)
+            if res.body.data and res.body.data.template:
+                count = 0
+                for t in res.body.data.template:
+                    existing = db.query(models.EmailTemplate).filter(models.EmailTemplate.title == t.template_name).first()
+                    detail_res = AliyunService.desc_template(client, int(t.template_id))
+                    detail = detail_res.body
+                    
+                    if not existing:
+                        new_t = models.EmailTemplate(
+                            title=detail.template_name,
+                            subject=detail.template_subject,
+                            body=detail.template_text,
+                            from_alias=setting.from_alias
+                        )
+                        db.add(new_t)
+                        count += 1
+                    else:
+                        existing.subject = detail.template_subject
+                        existing.body = detail.template_text
+                messages.append(f"阿里云同步 {count} 个")
+        except Exception as e:
+            print(f"Aliyun Sync Error: {e}")
+            messages.append("阿里云同步失败")
 
-        sync_count = 0
-        for t in al_templates:
-            existing = db.query(models.EmailTemplate).filter(models.EmailTemplate.title == t.template_name).first()
-            detail_res = AliyunService.desc_template(client, int(t.template_id))
-            detail = detail_res.body
+    # --- 2. Tencent Sync ---
+    if setting.tencent_secret_id and setting.tencent_secret_key:
+        try:
+            from ..services.tencent_service import TencentService
+            client = TencentService.create_client(setting.tencent_secret_id, setting.tencent_secret_key, setting.tencent_region)
+            res = TencentService.query_templates(client)
             
-            if not existing:
-                new_t = models.EmailTemplate(
-                    title=detail.template_name,
-                    subject=detail.template_subject,
-                    body=detail.template_text,
-                    from_alias=setting.from_alias # 默认使用全局别名
-                )
-                db.add(new_t)
-                sync_count += 1
-            else:
-                existing.subject = detail.template_subject
-                existing.body = detail.template_text
-                sync_count += 1
-        
-        db.commit()
-        return {"message": f"成功同步 {sync_count} 个模板"}
-    except Exception as e:
-        error_msg = str(e)
-        if "SSL" in error_msg or "Connection" in error_msg or "time" in error_msg.lower():
-            raise HTTPException(status_code=500, detail="连接阿里云超时。这通常是本地网络问题，请稍后重试，或直接使用“新建模板”手动录入。")
-        raise HTTPException(status_code=500, detail=f"同步失败: {error_msg}")
+            # Fix: Parse Tencent response as JSON dict
+            data = json.loads(res.to_json_string())
+            
+            if "Templates" in data and data["Templates"]:
+                count = 0
+                for t in data["Templates"]:
+                    # t is a dict: {'TemplateID': ..., 'TemplateName': ...}
+                    template_id = t.get('TemplateID')
+                    template_name = t.get('TemplateName')
+                    
+                    detail_res = TencentService.get_template(client, template_id)
+                    detail_data = json.loads(detail_res.to_json_string())
+                    detail_content = detail_data.get('TemplateContent', {})
+                    
+                    existing = db.query(models.EmailTemplate).filter(models.EmailTemplate.title == template_name).first()
+                    
+                    # Fallback for Subject (Standard SES templates might not store it)
+                    subject = "来自腾讯云的模板"
+                    if 'TemplateSubject' in detail_content:
+                         subject = detail_content['TemplateSubject']
+                    
+                    body = detail_content.get('Html', 'No Content')
+                    
+                    if not existing:
+                        new_t = models.EmailTemplate(
+                            title=template_name,
+                            subject=subject,
+                            body=body,
+                            from_alias=setting.from_alias
+                        )
+                        db.add(new_t)
+                        count += 1
+                    else:
+                        existing.body = body
+                messages.append(f"腾讯云同步 {count} 个")
+        except Exception as e:
+            print(f"Tencent Sync Error: {e}")
+            messages.append("腾讯云同步失败")
+
+    db.commit()
+    if not messages:
+        return {"message": "未配置任何云服务商，无法同步"}
+    return {"message": " | ".join(messages)}
 
 @router.get("/senders/sync")
 def sync_senders(db: Session = Depends(get_db)):
@@ -164,17 +210,47 @@ def sync_senders(db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="请先在设置中配置 AccessKey")
     
     senders = []
-    try:
-        if setting.access_key_id:
+    
+    # --- Aliyun ---
+    if setting.access_key_id and setting.access_key_secret:
+        try:
             client = AliyunService.create_client(setting.access_key_id, setting.access_key_secret, setting.region_id)
             res = AliyunService.query_mail_address(client)
             if res.body.data and res.body.data.mail_address:
                 for addr in res.body.data.mail_address:
                     status_map = {'0': '正常', '1': '冻结', '2': '待验证'}
                     status_str = status_map.get(str(addr.account_status), str(addr.account_status))
-                    senders.append({"email": addr.account_name, "provider": "aliyun", "status": status_str})
-    except Exception as e:
-        print(f"Sync senders failed: {e}")
+                    senders.append({
+                        "email": addr.account_name, 
+                        "provider": "aliyun", 
+                        "status": status_str,
+                        "label": f"[阿里云] {addr.account_name} ({status_str})"
+                    })
+        except Exception as e:
+            print(f"Aliyun Senders Error: {e}")
+
+    # --- Tencent ---
+    if setting.tencent_secret_id and setting.tencent_secret_key:
+        try:
+            from ..services.tencent_service import TencentService
+            client = TencentService.create_client(setting.tencent_secret_id, setting.tencent_secret_key, setting.tencent_region)
+            res = TencentService.query_senders(client)
+            
+            # Fix: Parse Tencent response as JSON dict
+            data = json.loads(res.to_json_string())
+            
+            if "EmailIdentities" in data and data["EmailIdentities"]:
+                for identity in data["EmailIdentities"]:
+                    # identity is a dict: {'IdentityName': '...', 'IdentityType': ...}
+                    email = identity.get('IdentityName')
+                    senders.append({
+                        "email": email,
+                        "provider": "tencent",
+                        "status": "已验证", 
+                        "label": f"[腾讯云] {email}"
+                    })
+        except Exception as e:
+            print(f"Tencent Senders Error: {e}")
     
     return senders
 
