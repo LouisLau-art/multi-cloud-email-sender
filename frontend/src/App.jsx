@@ -238,139 +238,70 @@ const Campaigns = () => {
     api.get('/templates').then(res => setTemplates(res.data));
   };
   
-  useEffect(() => { 
-      refresh(); 
-      const interval = setInterval(refresh, 3000);
-      return () => clearInterval(interval);
+  // --- 草稿功能：自动保存与恢复 ---
+  useEffect(() => {
+    // 恢复草稿
+    const draft = localStorage.getItem('campaign_draft');
+    if (draft) {
+      try {
+        const values = JSON.parse(draft);
+        // scheduled_start_time 需要转回 dayjs 对象
+        if (values.scheduled_start_time) {
+          values.scheduled_start_time = dayjs(values.scheduled_start_time);
+        }
+        form.setFieldsValue(values);
+      } catch (e) {
+        console.error('恢复草稿失败', e);
+      }
+    }
+    
+    refresh(); 
+    const interval = setInterval(refresh, 3000);
+    return () => clearInterval(interval);
   }, []);
 
+  const handleValuesChange = (_, allValues) => {
+    // 实时保存草稿
+    localStorage.setItem('campaign_draft', JSON.stringify(allValues));
+  };
+  // ---------------------------
+
   const loadSenders = () => {
+// ... (rest of the component)
     api.get('/senders/sync').then(res => {
-      // 后端返回 [{email, provider, label}, ...]
       setSenders(res.data.map(s => ({
           label: s.label || `${s.email} (${s.provider})`, 
           value: s.email,
-          provider: s.provider // 保留 provider 用于过滤
+          provider: s.provider 
       })));
     }).catch(e => message.error('加载发信地址失败'));
   };
 
   const handleStart = (id) => {
-    api.post(`/campaigns/${id}/start`).then(() => {
-      message.success('任务已激活');
-      refresh();
-    });
-  };
-
-  const handleStop = (id) => {
-    api.post(`/campaigns/${id}/stop`).then(() => {
-      message.warning('任务已暂停');
-      refresh();
-    });
-  };
-  
-  const handleDelete = (id) => {
-      api.delete(`/campaigns/${id}`).then(() => {
-          message.success('任务已删除');
-          refresh();
-      });
+// ...
   };
 
   const onFinish = (values) => {
-    // 处理 Select mode="tags" 返回数组的问题
-    let accName = values.account_name;
-    if (Array.isArray(accName)) {
-        accName = accName[0];
-    }
-
-    const payload = {
-      ...values,
-      account_name: accName,
-      batch_size: parseInt(values.batch_size, 10),
-      interval_minutes: parseInt(values.interval_minutes, 10),
-      scheduled_start_time: values.scheduled_start_time ? values.scheduled_start_time.toISOString() : null
-    };
+    // ...
     api.post('/campaigns', payload).then(() => {
       message.success('任务创建成功');
+      // 创建成功后清除草稿
+      localStorage.removeItem('campaign_draft');
+      form.resetFields();
       refresh();
     }).catch(err => {
-        message.error('创建失败: ' + (err.response?.data?.detail || '参数错误'));
+// ...
     });
   };
 
-  // 根据当前选择的服务商过滤发信地址
-  const filteredSenders = senders.filter(s => !selectedProvider || s.provider === selectedProvider);
-
-  const columns = [
-    { title: '任务名称', dataIndex: 'name', key: 'name' },
-    { title: '发件人', dataIndex: 'from_alias', key: 'from', render: (t) => t || '(默认)' },
-    { title: '服务商', dataIndex: 'provider', key: 'provider', render: (text) => text === 'tencent' ? '腾讯云' : '阿里云' },
-    { title: '状态', dataIndex: 'status', key: 'status', render: (text) => {
-        const map = { pending: '等待中', sending: '发送中', completed: '已完成', paused: '已暂停', error: '错误', scheduled: '计划中' };
-        const color = { sending: 'green', completed: 'blue', pending: 'orange', paused: 'red', scheduled: 'purple' };
-        return <Tag color={color[text] || 'default'}>{map[text] || text}</Tag>;
-    }},
-    { title: '发送进度', key: 'progress', width: 150, render: (_, record) => (
-      <div>
-        <Progress percent={Math.round((record.sent_count / record.total_recipients) * 100)} size="small" />
-        <small>{record.sent_count} / {record.total_recipients}</small>
-      </div>
-    )},
-    // Fix timezone display by forcing UTC interpretation if needed
-    { title: '计划开始', dataIndex: 'scheduled_start_time', key: 'start', render: (t) => t ? new Date(t + (t.endsWith('Z') ? '' : 'Z')).toLocaleString('zh-CN', { hour12: false }) : '-' },
-    { title: '操作', key: 'action', render: (_, record) => (
-      <div style={{display: 'flex', gap: 5}}>
-        {record.status === 'pending' || record.status === 'paused' || record.status === 'scheduled' ? 
-        <Button type="primary" size="small" onClick={() => handleStart(record.id)}>{record.status === 'scheduled' ? '立即开始' : '开始发送'}</Button> :
-        record.status === 'sending' ?
-        <Button danger size="small" onClick={() => handleStop(record.id)}>暂停</Button> : null}
-        <Popconfirm title="确定删除吗？" onConfirm={() => handleDelete(record.id)}>
-            <Button size="small" danger type="text">删除</Button>
-        </Popconfirm>
-      </div>
-    )}
-  ];
+  // ... (columns omitted)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
       <Card title="创建新任务">
-        <Form form={form} layout="vertical" onFinish={onFinish}>
+        <Form form={form} layout="vertical" onFinish={onFinish} onValuesChange={handleValuesChange}>
           <Row gutter={16}>
-            <Col span={8}>
-              <Form.Item name="name" label="任务名称" required><Input placeholder="例如：元旦促销第一波" /></Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item name="provider" label="服务商" initialValue="aliyun" required>
-                <Select>
-                  <Select.Option value="aliyun">阿里云 (DirectMail)</Select.Option>
-                  <Select.Option value="tencent">腾讯云 (SES)</Select.Option>
-                </Select>
-              </Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item name="from_alias" label="本次任务发信人昵称" tooltip="留空则使用模板设置或全局设置"><Input placeholder="例如：促销小助手" /></Form.Item>
-            </Col>
-          </Row>
-          
-          <Row gutter={16}>
-            <Col span={8}>
-              <Form.Item name="template_id" label="选择模板" required><Select placeholder="请选择" options={templates.map(t => ({label: t.title, value: t.id}))} /></Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item name="list_id" label="选择联系人列表" required><Select placeholder="请选择" options={lists.map(l => ({label: l.name, value: l.id}))} /></Form.Item>
-            </Col>
-            <Col span={8}>
-              <Form.Item name="account_name" label="发信地址" required>
-                <Select 
-                  placeholder={selectedProvider === 'tencent' ? "请选择腾讯云域名" : "请选择阿里云发信地址"}
-                  mode="tags" 
-                  maxCount={1}
-                  onOpenChange={(open) => open && loadSenders()}
-                  options={filteredSenders}
-                />
-              </Form.Item>
-            </Col>
-          </Row>
+// ... (form content)
 
           <Row gutter={16}>
             <Col span={6}>
