@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal, Tabs } from 'antd';
-import { UploadOutlined, UserOutlined, MailOutlined, SettingOutlined, RocketOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
+import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal, Tabs, Divider, Space } from 'antd';
+import { UploadOutlined, UserOutlined, MailOutlined, SettingOutlined, RocketOutlined, EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import api, { contactApi } from './services/api';
+import api, { contactApi, settingsApi } from './services/api';
 import dayjs from 'dayjs';
 
 const { Header, Content, Sider } = Layout;
@@ -250,6 +250,8 @@ const Campaigns = () => {
   const [lists, setLists] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [senders, setSenders] = useState([]);
+  const [savedReplyTos, setSavedReplyTos] = useState([]);
+  const [newReplyTo, setNewReplyTo] = useState('');
   const [form] = Form.useForm();
   
   const selectedProvider = Form.useWatch('provider', form);
@@ -258,6 +260,7 @@ const Campaigns = () => {
     api.get('/campaigns').then(res => setCampaigns(res.data));
     api.get('/contacts').then(res => setLists(res.data));
     api.get('/templates').then(res => setTemplates(res.data));
+    settingsApi.getReplyTos().then(res => setSavedReplyTos(res.data || []));
   };
   
   useEffect(() => {
@@ -289,9 +292,33 @@ const Campaigns = () => {
       setSenders(res.data.map(s => ({
           label: s.label || `${s.email} (${s.provider})`, 
           value: s.email,
-          provider: s.provider 
+          provider: s.provider,
+          reply_address: s.reply_address
       })));
     }).catch(e => message.error('加载发信地址失败'));
+  };
+
+  const handleAccountChange = (value) => {
+      // 阿里云自动填充回信地址
+      if (selectedProvider === 'aliyun') {
+          // value 可能是数组 (mode="tags")
+          const email = Array.isArray(value) ? value[0] : value;
+          const sender = senders.find(s => s.value === email);
+          if (sender && sender.reply_address) {
+              form.setFieldsValue({ reply_to_address: sender.reply_address });
+              message.info(`已自动加载阿里云回信地址: ${sender.reply_address}`);
+          }
+      }
+  };
+
+  const addReplyTo = (e) => {
+      e.preventDefault();
+      if (!newReplyTo) return;
+      settingsApi.addReplyTo(newReplyTo).then(res => {
+          setSavedReplyTos([res.data, ...savedReplyTos]);
+          setNewReplyTo('');
+          message.success('回信地址已保存');
+      });
   };
 
   const handleStart = (id) => {
@@ -379,7 +406,7 @@ const Campaigns = () => {
             </Col>
             <Col span={8}>
               <Form.Item name="provider" label="服务商" initialValue="aliyun" required>
-                <Select>
+                <Select onChange={() => form.setFieldValue('account_name', null)}>
                   <Select.Option value="aliyun">阿里云 (DirectMail)</Select.Option>
                   <Select.Option value="tencent">腾讯云 (SES)</Select.Option>
                 </Select>
@@ -404,24 +431,55 @@ const Campaigns = () => {
                   mode="tags" 
                   maxCount={1}
                   onOpenChange={(open) => open && loadSenders()}
+                  onChange={handleAccountChange}
                   options={filteredSenders}
                 />
               </Form.Item>
             </Col>
           </Row>
 
-          <Row gutter={16}>
-            <Col span={6}>
+           <Row gutter={16}>
+            <Col span={8}>
+               <Form.Item name="reply_to_address" label="回信地址 (Reply-To)" tooltip={selectedProvider === 'aliyun' ? "阿里云限制：必须在阿里云控制台预先配置回信地址。此处仅做展示，无法修改。" : "收件人点击回复时，邮件将发送到此地址"}>
+                   <Select
+                        placeholder={selectedProvider === 'aliyun' ? "（根据发信地址自动加载）" : "请输入或选择回信地址"}
+                        disabled={selectedProvider === 'aliyun'}
+                        allowClear={selectedProvider !== 'aliyun'}
+                        dropdownRender={(menu) => (
+                            <>
+                                {menu}
+                                <Divider style={{ margin: '8px 0' }} />
+                                <Space style={{ padding: '0 8px 4px' }}>
+                                    <Input
+                                        placeholder="输入新地址"
+                                        value={newReplyTo}
+                                        onChange={(e) => setNewReplyTo(e.target.value)}
+                                        onKeyDown={(e) => e.stopPropagation()}
+                                    />
+                                    <Button type="text" icon={<PlusOutlined />} onClick={addReplyTo}>
+                                        保存
+                                    </Button>
+                                </Space>
+                            </>
+                        )}
+                        options={savedReplyTos.map(item => ({ label: item.address, value: item.address }))}
+                   />
+               </Form.Item>
+            </Col>
+            <Col span={5}>
               <Form.Item name="batch_size" label="单次发送数量" initialValue={2000}><Input type="number" /></Form.Item>
             </Col>
-            <Col span={6}>
+            <Col span={5}>
               <Form.Item name="interval_minutes" label="发送间隔(分钟)" initialValue={15}><Input type="number" /></Form.Item>
             </Col>
             <Col span={6}>
               <Form.Item name="scheduled_start_time" label="计划开始时间"><DatePicker showTime placeholder="立即开始" style={{width: '100%'}} /></Form.Item>
             </Col>
-            <Col span={6} style={{display: 'flex', alignItems: 'center'}}>
-              <Button type="primary" htmlType="submit" size="large" style={{width: '100%'}} icon={<RocketOutlined />}>创建任务</Button>
+          </Row>
+          
+          <Row>
+            <Col span={24} style={{display: 'flex', justifyContent: 'flex-end'}}>
+              <Button type="primary" htmlType="submit" size="large" style={{width: '200px'}} icon={<RocketOutlined />}>创建任务</Button>
             </Col>
           </Row>
         </Form>

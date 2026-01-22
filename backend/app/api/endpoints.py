@@ -51,6 +51,11 @@ class CampaignCreate(BaseModel):
     interval_minutes: int = 15
     scheduled_start_time: Optional[datetime] = None
     from_alias: Optional[str] = None
+    reply_to_address: Optional[str] = None  # New Field
+
+
+class SavedReplyToCreate(BaseModel):
+    address: str
 
 
 class TemplateImport(BaseModel):
@@ -387,6 +392,7 @@ def sync_senders(db: Session = Depends(get_db)):
                             "provider": "aliyun",
                             "status": status_str,
                             "label": f"[阿里云] {addr.account_name} ({status_str})",
+                            "reply_address": addr.reply_address,  # 同步阿里云的回信地址
                         }
                     )
         except Exception as e:
@@ -433,7 +439,35 @@ def create_campaign(campaign: CampaignCreate, db: Session = Depends(get_db)):
         campaign.scheduled_start_time,
         campaign.from_alias,
         campaign.provider,
+        campaign.reply_to_address,
     )
+
+
+# --- Saved Reply-To Endpoints ---
+@router.get("/settings/reply_tos")
+def get_saved_reply_tos(db: Session = Depends(get_db)):
+    return (
+        db.query(models.SavedReplyTo)
+        .order_by(models.SavedReplyTo.created_at.desc())
+        .all()
+    )
+
+
+@router.post("/settings/reply_tos")
+def add_saved_reply_to(data: SavedReplyToCreate, db: Session = Depends(get_db)):
+    existing = (
+        db.query(models.SavedReplyTo)
+        .filter(models.SavedReplyTo.address == data.address)
+        .first()
+    )
+    if existing:
+        return existing
+
+    new_addr = models.SavedReplyTo(address=data.address)
+    db.add(new_addr)
+    db.commit()
+    db.refresh(new_addr)
+    return new_addr
 
 
 @router.get("/campaigns")

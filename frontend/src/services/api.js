@@ -54,6 +54,8 @@ export const settingsApi = {
     update: (data) => api.put('/settings', data),
     testAliyun: () => api.post('/settings/test/aliyun'),
     testTencent: () => api.post('/settings/test/tencent'),
+    getReplyTos: () => api.get('/settings/reply_tos'),
+    addReplyTo: (address) => api.post('/settings/reply_tos', { address }),
 };
 
 export default api;

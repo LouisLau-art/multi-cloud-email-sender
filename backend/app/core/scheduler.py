@@ -135,6 +135,7 @@ def send_campaign_batch():
                                 from_alias=real_from_alias,
                                 template_id=template.provider_id,
                                 template_params=json.dumps(vars_map),
+                                reply_to_address=campaign.reply_to_address,
                             )
                         else:
                             # 腾讯云 HTML 模式
@@ -155,6 +156,7 @@ def send_campaign_batch():
                                 subject,
                                 body,
                                 from_alias=real_from_alias,
+                                reply_to_address=campaign.reply_to_address,
                             )
                     elif campaign.provider == "aliyun":
                         body = template.body
@@ -165,10 +167,13 @@ def send_campaign_batch():
                         # 清理未匹配的变量 (只清理看起来像变量的，避免破坏 CSS/JS)
                         body = re.sub(r"\{([\w\s]+)\}", r"\1", body)
 
+                        # 阿里云: 如果 campaign.reply_to_address 有值，则认为开启回信地址功能 (True)
+                        use_reply_to = True if campaign.reply_to_address else False
+
                         AliyunService.single_send_mail(
                             ali_client,
                             campaign.account_name,
-                            True,
+                            use_reply_to,
                             1,
                             clean_to_address,
                             subject,
