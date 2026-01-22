@@ -223,23 +223,19 @@ class ContactService:
 
 class CampaignService:
     @staticmethod
-    def create_campaign(db: Session, name: str, template_id: int, list_id: int, 
-                        account_name: str, batch_size: int = 2000, interval_minutes: int = 15,
-                        scheduled_start_time: datetime = None, from_alias: str = None):
-        list_obj = db.query(models.ContactList).filter(models.ContactList.id == list_id).first()
-        campaign = models.Campaign(
+    def create_campaign(db: Session, name: str, template_id: int, list_id: int, account_name: str, batch_size: int, interval_minutes: int, scheduled_start_time: datetime = None, from_alias: str = None, provider: str = "aliyun"):
+        campaign = Campaign(
             name=name,
+            provider=provider,
             template_id=template_id,
             list_id=list_id,
             account_name=account_name,
-            total_recipients=list_obj.total_count,
             batch_size=batch_size,
             interval_minutes=interval_minutes,
-            status="pending",
             scheduled_start_time=scheduled_start_time,
-            from_alias=from_alias
+            from_alias=from_alias,
+            status="pending"
         )
         db.add(campaign)
         db.commit()
-        db.refresh(campaign)
         return campaign

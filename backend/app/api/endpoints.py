@@ -276,7 +276,8 @@ def create_campaign(campaign: CampaignCreate, db: Session = Depends(get_db)):
         campaign.batch_size,
         campaign.interval_minutes,
         campaign.scheduled_start_time,
-        campaign.from_alias
+        campaign.from_alias,
+        campaign.provider
     )
 
 @router.get("/campaigns")
