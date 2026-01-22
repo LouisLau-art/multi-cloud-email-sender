@@ -178,7 +178,7 @@ class ContactService:
         if df.empty:
             raise ValueError("CSV 文件中没有有效的收件人数据")
 
-        contact_list = models.ContactList(name=list_name, total_count=len(df))
+        contact_list = ContactList(name=list_name, total_count=len(df))
         db.add(contact_list)
         db.commit()
         db.refresh(contact_list)
@@ -205,7 +205,7 @@ class ContactService:
                 
             name_val = extra_vars.get(name_key, "") if name_key else ""
             
-            contact = models.Contact(
+            contact = Contact(
                 email=row['EmailAddr'],
                 name=name_val,
                 extra_vars=json.dumps(extra_vars, ensure_ascii=False),
