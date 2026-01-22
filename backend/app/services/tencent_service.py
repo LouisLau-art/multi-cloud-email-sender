@@ -29,9 +29,14 @@ class TencentService:
         
         req = models.SendEmailRequest()
         
+        # 自动补全发信地址：如果只是域名，加上前缀
+        real_from_email = from_email
+        if "@" not in from_email:
+            real_from_email = f"notification@{from_email}"
+
         # 使用 JSON 字符串初始化请求对象，这是最稳妥且能避开 SDK 版本差异的方法
         params = {
-            "FromEmailAddress": f"{from_alias} <{from_email}>" if from_alias else from_email,
+            "FromEmailAddress": f"{from_alias} <{real_from_email}>" if from_alias else real_from_email,
             "Destination": [to_email],
             "Subject": subject,
             "Simple": {

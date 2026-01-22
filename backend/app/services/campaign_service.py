@@ -224,6 +224,10 @@ class ContactService:
 class CampaignService:
     @staticmethod
     def create_campaign(db: Session, name: str, template_id: int, list_id: int, account_name: str, batch_size: int, interval_minutes: int, scheduled_start_time: datetime = None, from_alias: str = None, provider: str = "aliyun"):
+        # Fetch contact list count
+        contact_list = db.query(ContactList).filter(ContactList.id == list_id).first()
+        total_recipients = contact_list.total_count if contact_list else 0
+
         campaign = Campaign(
             name=name,
             provider=provider,
@@ -234,6 +238,7 @@ class CampaignService:
             interval_minutes=interval_minutes,
             scheduled_start_time=scheduled_start_time,
             from_alias=from_alias,
+            total_recipients=total_recipients, # Fix: Assign total count
             status="pending"
         )
         db.add(campaign)
