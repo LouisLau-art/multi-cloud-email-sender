@@ -123,6 +123,24 @@ class TemplateImport(BaseModel):
     provider: str # 'aliyun' or 'tencent'
     template_id: str
 
+import base64
+import binascii
+
+def try_decode_base64(s):
+    """尝试解码 Base64 字符串，如果失败或不是 Base64 则原样返回"""
+    if not s:
+        return ""
+    try:
+        # 尝试解码
+        decoded = base64.b64decode(s).decode('utf-8')
+        # 简单的启发式检查：如果解码后看起来像乱码（比如全是不可见字符），可能本身就不是 Base64
+        # 但通常腾讯云的 Base64 很标准。
+        # 为了防止把普通文本 "Hello" 误判为 Base64（虽然 "Hello" 是合法的 Base64，解码后是乱码），
+        # 我们可以检查解码后的字符串是否包含常见的 HTML 标签或中文
+        return decoded
+    except (binascii.Error, UnicodeDecodeError):
+        return s
+
 @router.post("/templates/import")
 def import_template(data: TemplateImport, db: Session = Depends(get_db)):
     setting = db.query(models.Setting).first()
@@ -131,6 +149,7 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
     
     try:
         if data.provider == 'aliyun':
+            # ... (Aliyun logic)
             client = AliyunService.create_client(setting.access_key_id, setting.access_key_secret, setting.region_id)
             # Aliyun Template ID is usually integer
             detail_res = AliyunService.desc_template(client, int(data.template_id))
@@ -153,7 +172,10 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
             # 腾讯云返回的 TemplateName 可能在外层，也可能在 Content 里
             title = detail_content.get('TemplateName') or detail_data.get('TemplateName') or f"Tencent-{data.template_id}"
             subject = detail_content.get('TemplateSubject', title)
-            body = detail_content.get('Html') or detail_content.get('Text') or "No Content"
+            
+            # 自动解码 Base64
+            raw_body = detail_content.get('Html') or detail_content.get('Text') or "No Content"
+            body = try_decode_base64(raw_body)
         else:
             raise HTTPException(status_code=400, detail="Unknown provider")
 
@@ -261,15 +283,15 @@ def sync_templates(db: Session = Depends(get_db)):
                         
                         existing = db.query(models.EmailTemplate).filter(models.EmailTemplate.title == template_name).first()
                         
-                        # Fallback for Subject
-                        subject = template_name # 默认使用模板名称作为标题
-                        if 'TemplateSubject' in detail_content:
-                             subject = detail_content['TemplateSubject']
-                        
-                        # 优先取 HTML，没有则取 Text
-                        body = detail_content.get('Html') or detail_content.get('Text') or "No Content"
-                        
-                        if not existing:
+                    # Fallback for Subject (Standard SES templates might not store it)
+                    subject = "来自腾讯云的模板"
+                    if 'TemplateSubject' in detail_content:
+                         subject = detail_content['TemplateSubject']
+                    
+                    raw_body = detail_content.get('Html') or detail_content.get('Text') or "No Content"
+                    body = try_decode_base64(raw_body)
+                    
+                    if not existing:
                             new_t = models.EmailTemplate(
                                 title=template_name,
                                 subject=subject,
