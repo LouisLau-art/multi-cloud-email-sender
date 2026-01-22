@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col } from 'antd';
+import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal } from 'antd';
 import { UploadOutlined, UserOutlined, MailOutlined, SettingOutlined, RocketOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { Routes, Route, Link, useNavigate, useLocation } from 'react-router-dom';
 import api, { contactApi } from './services/api';
@@ -109,7 +109,9 @@ const Contacts = () => {
 const Templates = () => {
   const [templates, setTemplates] = useState([]);
   const [editingId, setEditingId] = useState(null);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
   const [form] = Form.useForm();
+  const [importForm] = Form.useForm();
 
   const refresh = () => api.get('/templates').then(res => setTemplates(res.data));
   useEffect(() => { refresh(); }, []);
@@ -142,7 +144,7 @@ const Templates = () => {
   };
   
   const handleSync = async () => {
-    message.loading({ content: '正在从阿里云同步...', key: 'syncing' });
+    message.loading({ content: '正在从阿里云/腾讯云同步...', key: 'syncing' });
     try {
       const res = await api.post('/templates/sync');
       message.success({ content: res.data.message, key: 'syncing' });
@@ -152,8 +154,27 @@ const Templates = () => {
     }
   };
 
+  const handleImport = async () => {
+      try {
+          const values = await importForm.validateFields();
+          message.loading({ content: '正在导入...', key: 'importing' });
+          const res = await api.post('/templates/import', {
+              provider: values.provider,
+              template_id: values.template_id
+          });
+          message.success({ content: `成功导入: ${res.data.title}`, key: 'importing' });
+          setIsImportModalOpen(false);
+          importForm.resetFields();
+          refresh();
+      } catch (e) {
+          message.error({ content: '导入失败: ' + (e.response?.data?.detail || e.message), key: 'importing' });
+      }
+  };
+
   const columns = [
     { title: '模板名称', dataIndex: 'title', key: 'title' },
+    { title: '来源', dataIndex: 'provider', key: 'provider', render: (t) => t === 'tencent' ? <Tag color="blue">腾讯云</Tag> : t === 'aliyun' ? <Tag color="orange">阿里云</Tag> : <Tag>本地</Tag> },
+    { title: '云端ID', dataIndex: 'provider_id', key: 'pid', render: (t) => t || '-' },
     { title: '发送人名称', dataIndex: 'from_alias', key: 'alias' },
     { title: '邮件标题', dataIndex: 'subject', key: 'subject' },
     { title: '操作', key: 'action', render: (_, record) => (
@@ -175,9 +196,28 @@ const Templates = () => {
           </div>
         </Form>
       </Card>
-      <Card title="已有模板" style={{ flex: 1 }} extra={<Button icon={<RocketOutlined />} onClick={handleSync}>同步云端模板</Button>}>
+      <Card title="已有模板" style={{ flex: 1 }} extra={
+          <div style={{display: 'flex', gap: 10}}>
+            <Button onClick={() => setIsImportModalOpen(true)}>指定ID导入</Button>
+            <Button icon={<RocketOutlined />} onClick={handleSync}>同步云端模板</Button>
+          </div>
+      }>
         <Table dataSource={templates} columns={columns} rowKey="id" />
       </Card>
+
+      <Modal title="按 ID 导入模板" open={isImportModalOpen} onOk={handleImport} onCancel={() => setIsImportModalOpen(false)}>
+          <Form form={importForm} layout="vertical">
+              <Form.Item name="provider" label="服务商" initialValue="tencent" required>
+                  <Select>
+                      <Select.Option value="tencent">腾讯云 (SES)</Select.Option>
+                      <Select.Option value="aliyun">阿里云 (DirectMail)</Select.Option>
+                  </Select>
+              </Form.Item>
+              <Form.Item name="template_id" label="模板 ID" required tooltip="请在腾讯云/阿里云控制台查找模板 ID (数字)">
+                  <Input placeholder="例如：12345" />
+              </Form.Item>
+          </Form>
+      </Modal>
     </div>
   );
 };

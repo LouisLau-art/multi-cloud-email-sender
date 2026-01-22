@@ -118,6 +118,70 @@ def update_template(id: int, template: TemplateUpdate, db: Session = Depends(get
 def get_templates(db: Session = Depends(get_db)):
     return db.query(models.EmailTemplate).all()
 
+class TemplateImport(BaseModel):
+    provider: str # 'aliyun' or 'tencent'
+    template_id: str
+
+@router.post("/templates/import")
+def import_template(data: TemplateImport, db: Session = Depends(get_db)):
+    setting = db.query(models.Setting).first()
+    if not setting:
+        raise HTTPException(status_code=400, detail="请先在设置中配置 AccessKey")
+    
+    try:
+        if data.provider == 'aliyun':
+            client = AliyunService.create_client(setting.access_key_id, setting.access_key_secret, setting.region_id)
+            # Aliyun Template ID is usually integer
+            detail_res = AliyunService.desc_template(client, int(data.template_id))
+            detail = detail_res.body
+            
+            title = detail.template_name
+            subject = detail.template_subject
+            body = detail.template_text
+            
+        elif data.provider == 'tencent':
+            from ..services.tencent_service import TencentService
+            client = TencentService.create_client(setting.tencent_secret_id, setting.tencent_secret_key, setting.tencent_region)
+            # Tencent Template ID is integer in V20201002
+            detail_res = TencentService.get_template(client, int(data.template_id))
+            detail_data = json.loads(detail_res.to_json_string())
+            detail_content = detail_data.get('TemplateContent', {})
+            
+            title = detail_content.get('TemplateName', f"Tencent-{data.template_id}")
+            subject = detail_content.get('TemplateSubject', title)
+            body = detail_content.get('Html', 'No Content')
+        else:
+            raise HTTPException(status_code=400, detail="Unknown provider")
+
+        # Save to DB
+        existing = db.query(models.EmailTemplate).filter(
+            models.EmailTemplate.provider == data.provider,
+            models.EmailTemplate.provider_id == data.template_id
+        ).first()
+        
+        if existing:
+            existing.title = title
+            existing.subject = subject
+            existing.body = body
+            db.commit()
+            return {"message": "模板已更新", "title": title}
+        else:
+            new_t = models.EmailTemplate(
+                title=title,
+                subject=subject,
+                body=body,
+                from_alias=setting.from_alias,
+                provider=data.provider,
+                provider_id=data.template_id
+            )
+            db.add(new_t)
+            db.commit()
+            return {"message": "模板已导入", "title": title}
+
+    except Exception as e:
+        print(f"Import Error: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
+
 @router.post("/templates/sync")
 def sync_templates(db: Session = Depends(get_db)):
     setting = db.query(models.Setting).first()
@@ -146,13 +210,17 @@ def sync_templates(db: Session = Depends(get_db)):
                             title=detail.template_name,
                             subject=detail.template_subject,
                             body=detail.template_text,
-                            from_alias=setting.from_alias
+                            from_alias=setting.from_alias,
+                            provider='aliyun',
+                            provider_id=str(t.template_id)
                         )
                         db.add(new_t)
                         count += 1
                     else:
                         existing.subject = detail.template_subject
                         existing.body = detail.template_text
+                        existing.provider = 'aliyun'
+                        existing.provider_id = str(t.template_id)
                 messages.append(f"阿里云同步 {count} 个")
         except Exception as e:
             print(f"Aliyun Sync Error: {e}")
@@ -167,6 +235,7 @@ def sync_templates(db: Session = Depends(get_db)):
             
             # Fix: Parse Tencent response as JSON dict
             data = json.loads(res.to_json_string())
+            print(f"DEBUG Tencent Sync Response: {json.dumps(data, ensure_ascii=False)}") # Debug Log
             
             if "Templates" in data and data["Templates"]:
                 count = 0
@@ -193,12 +262,16 @@ def sync_templates(db: Session = Depends(get_db)):
                             title=template_name,
                             subject=subject,
                             body=body,
-                            from_alias=setting.from_alias
+                            from_alias=setting.from_alias,
+                            provider='tencent',
+                            provider_id=str(template_id)
                         )
                         db.add(new_t)
                         count += 1
                     else:
                         existing.body = body
+                        existing.provider = 'tencent'
+                        existing.provider_id = str(template_id)
                 messages.append(f"腾讯云同步 {count} 个")
         except Exception as e:
             print(f"Tencent Sync Error Detail: {traceback.format_exc()}")

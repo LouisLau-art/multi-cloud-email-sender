@@ -1,0 +1,51 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>月度服务账单与安全报告</title>
+    <style>
+        body { font-family: "Microsoft YaHei", Arial, sans-serif; background-color: #f4f4f4; margin: 0; padding: 0; color: #333333; }
+        .container { max-width: 600px; margin: 20px auto; background-color: #ffffff; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
+        .header { background-color: #006eff; color: #ffffff; padding: 20px; text-align: center; }
+        .content { padding: 30px; line-height: 1.6; }
+        .footer { background-color: #f9f9f9; padding: 15px; text-align: center; font-size: 12px; color: #999999; border-top: 1px solid #eeeeee; }
+        .highlight { color: #006eff; font-weight: bold; }
+        .data-box { background-color: #f0f7ff; padding: 15px; border-radius: 4px; margin: 20px 0; border-left: 4px solid #006eff; }
+        .btn { display: inline-block; background-color: #006eff; color: #ffffff; padding: 10px 20px; text-decoration: none; border-radius: 4px; margin-top: 20px; }
+        a { color: #006eff; text-decoration: none; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h2 style="margin:0;">{{company_name}} 服务月报</h2>
+        </div>
+        <div class="content">
+            <p>尊敬的 <strong>{{username}}</strong>：</p>
+            <p>您好！感谢您持续使用我们的云端代码托管与协作服务。为了让您更好地了解上个月的账户动态与资源使用情况，我们为您生成了本月的服务概览报告。</p>
+            
+            <p>在过去的一个月里，您的团队在代码提交频率和协作效率上表现优异。我们致力于为您提供稳定、安全、高效的开发环境，确您的每一行代码都能被妥善管理。</p>
+
+            <div class="data-box">
+                <h3 style="margin-top:0; font-size: 16px;">📊 {{report_month}} 数据概览</h3>
+                <p style="margin: 5px 0;">项目活跃度：本月累计产生 <strong>{{commit_count}}</strong> 次代码提交。</p>
+                <p style="margin: 5px 0;">安全扫描：系统为您拦截了 <strong>{{risk_count}}</strong> 次潜在风险访问。</p>
+                <p style="margin: 5px 0;">资源使用率：您的存储空间使用量已达到 <strong>{{storage_usage}}</strong>，运行状态良好。</p>
+            </div>
+
+            <p>此外，我们注意到您的账户安全评分处于健康水平。为了进一步保障您的数据资产安全，我们建议您定期更新访问密钥，并开启多因素认证（MFA）。安全无小事，防患于未然是我们共同的目标。</p>
+            
+            <p>如需查看详细的账单明细或下载完整的分析报告，请点击下方按钮登录控制台进行操作。若您对本期账单有任何疑问，欢迎随时联系我们的 7x24 小时客户服务团队。</p>
+
+            <center>
+                <a href="https://console.cloud.tencent.com/" class="btn">前往控制台查看详情</a>
+            </center>
+        </div>
+        <div class="footer">
+            <p>本邮件由 {{company_name}} 系统自动发送，请勿直接回复。</p>
+            <p>如需取消订阅此类通知，请登录系统在“个人中心-通知设置”中进行调整。</p>
+            <p>&copy; 2026 {{company_name}} All Rights Reserved.</p>
+        </div>
+    </div>
+</body>
+</html>

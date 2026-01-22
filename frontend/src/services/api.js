@@ -46,6 +46,7 @@ export const templateApi = {
     delete: (id) => api.delete(`/templates/${id}`),
     syncAliyun: (accessKeyId, accessKeySecret) => api.post('/templates/sync/aliyun', { accessKeyId, accessKeySecret }),
     syncTencent: (secretId, secretKey) => api.post('/templates/sync/tencent', { secretId, secretKey }),
+    importTemplate: (provider, templateId) => api.post('/templates/import', { provider, template_id: templateId }),
 };
 
 export const settingsApi = {
