@@ -93,54 +93,39 @@ def send_campaign_batch():
                     logger.info(f"Campaign {campaign.name} stopped/paused by user. Breaking loop.")
                     break
 
-                # 动态替换变量
+                # 动态替换变量 (仅准备数据，暂不替换字符串)
                 vars_map = json.loads(contact.extra_vars) if contact.extra_vars else {}
-                # 增强兼容性：将 contact.name 映射到常用的变量名
                 if contact.name:
                     vars_map['Name'] = contact.name
                     vars_map['name'] = contact.name
                     vars_map['UserName'] = contact.name
                     vars_map['username'] = contact.name
-                
                 vars_map['Email'] = contact.email or ""
                 
-                subject = template.subject
-                body = template.body
-                for key, val in vars_map.items():
-                    subject = subject.replace(f"{{{key}}}", str(val))
-                    body = body.replace(f"{{{key}}}", str(val))
-                
-                # 确定发件人昵称优先级：任务 > 模板 > 全局设置 > 邮箱前缀
+                # 确定发件人昵称
                 real_from_alias = (
                     campaign.from_alias or 
                     template.from_alias or 
                     setting.from_alias or 
                     campaign.account_name.split('@')[0]
                 )
-                
-                # --- 最后防线：清洗 Email (应对 dirty data) ---
                 clean_to_address = contact.email.split()[0].strip()
                 
-                # --- 增强日志：打印替换预览 ---
-                preview_sub = subject[:30] + "..." if len(subject) > 30 else subject
-                logger.info(f"[{i+1}/{len(contacts)}] To: {clean_to_address} | Vars: {list(vars_map.keys())} | Subject: {preview_sub}")
-                
-                try:
-                    if campaign.provider == 'aliyun':
-                        AliyunService.single_send_mail(
-                            client=ali_client,
-                            account_name=campaign.account_name,
-                            reply_to_address=True,
-                            address_type=1,
-                            to_address=clean_to_address,
-                            subject=subject,
-                            html_body=body,
-                            from_alias=real_from_alias
-                        )
-                    elif campaign.provider == 'tencent':
-                        # Check if we should use Template Mode (Preferred for Tencent)
+                # 腾讯云逻辑
+                if campaign.provider == 'tencent':
+                    logger.info(f"DEBUG Tencent Check: TplProvider={template.provider}, TplID={template.provider_id}") # Debug Log
+                    try:
+                        # 模式A：腾讯云原生模板 (Template Mode)
                         if template.provider == 'tencent' and template.provider_id:
-                            # Construct TemplateParams JSON
+                            # 关键修复：不要做本地字符串替换！直接传变量给腾讯云
+                            # 腾讯云模板使用 {{key}}，我们只需传 {"key": "value"}
+                            
+                            # 构造 Subject (如果模板没有默认标题，或者我们想覆盖)
+                            # 注意：腾讯云 Template 接口的 Subject 参数优先级高于模板自带 Subject
+                            # 这里我们不对 Subject 做本地替换，除非我们想强制覆盖模板标题
+                            # 为了保险，我们还是用模板原标题，不做任何处理
+                            final_subject = template.subject
+                            
                             template_params_json = json.dumps(vars_map)
                             
                             TencentService.send_mail(
@@ -149,14 +134,23 @@ def send_campaign_batch():
                                 region=setting.tencent_region,
                                 from_email=campaign.account_name,
                                 to_email=clean_to_address,
-                                subject=subject, # Tencent API allows overriding template subject
-                                html_body="", # No HTML body needed for template mode
+                                subject=final_subject, 
+                                html_body="", 
                                 from_alias=real_from_alias,
                                 template_id=template.provider_id,
                                 template_params=template_params_json
                             )
+                            logger.info(f"[{i+1}/{len(contacts)}] Sent (Tencent Template) to {clean_to_address}")
+                            
+                        # 模式B：自定义 HTML (Custom Mode)
                         else:
-                            # Fallback to Custom HTML Mode (Requires Permission)
+                            # 需要本地替换
+                            subject = template.subject
+                            body = template.body
+                            for key, val in vars_map.items():
+                                subject = subject.replace(f"{{{key}}}", str(val))
+                                body = body.replace(f"{{{key}}}", str(val))
+                                
                             TencentService.send_mail(
                                 secret_id=setting.tencent_secret_id,
                                 secret_key=setting.tencent_secret_key,
@@ -167,13 +161,38 @@ def send_campaign_batch():
                                 html_body=body,
                                 from_alias=real_from_alias
                             )
-                    
-                    logger.info(f"✅ SUCCESS: {clean_to_address}")
-                    
-                    # 拟人化随机延迟
-                    time.sleep(random.uniform(0.2, 1.0))
-                except Exception as e:
-                    logger.error(f"❌ FAILED: {clean_to_address} - {e}")
+                            logger.info(f"[{i+1}/{len(contacts)}] Sent (Tencent HTML) to {clean_to_address}")
+
+                        campaign.sent_count += 1
+                        time.sleep(random.uniform(0.2, 1.0))
+                    except Exception as e:
+                        logger.error(f"❌ FAILED (Tencent): {clean_to_address} - {e}")
+
+                # 阿里云逻辑
+                elif campaign.provider == 'aliyun':
+                    try:
+                        # 阿里云目前统一使用本地替换模式
+                        subject = template.subject
+                        body = template.body
+                        for key, val in vars_map.items():
+                            subject = subject.replace(f"{{{key}}}", str(val))
+                            body = body.replace(f"{{{key}}}", str(val))
+                            
+                        AliyunService.single_send_mail(
+                            client=ali_client,
+                            account_name=campaign.account_name,
+                            reply_to_address=True,
+                            address_type=1,
+                            to_address=clean_to_address,
+                            subject=subject,
+                            html_body=body,
+                            from_alias=real_from_alias
+                        )
+                        campaign.sent_count += 1
+                        logger.info(f"[{i+1}/{len(contacts)}] Sent (Aliyun) to {clean_to_address}")
+                        time.sleep(random.uniform(0.2, 1.0))
+                    except Exception as e:
+                        logger.error(f"❌ FAILED (Aliyun): {clean_to_address} - {e}")
             
             # 更新进度
             campaign.sent_count += len(contacts)
