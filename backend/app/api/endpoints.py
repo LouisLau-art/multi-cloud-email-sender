@@ -12,6 +12,9 @@ from ..core.scheduler import scheduler, send_campaign_batch
 router = APIRouter()
 
 # --- Pydantic Models ---
+import json
+import traceback
+
 class SettingUpdate(BaseModel):
     access_key_id: Optional[str] = None
     access_key_secret: Optional[str] = None
@@ -195,8 +198,8 @@ def sync_templates(db: Session = Depends(get_db)):
                         existing.body = body
                 messages.append(f"腾讯云同步 {count} 个")
         except Exception as e:
-            print(f"Tencent Sync Error: {e}")
-            messages.append("腾讯云同步失败")
+            print(f"Tencent Sync Error Detail: {traceback.format_exc()}")
+            messages.append(f"腾讯云同步失败: {str(e)}")
 
     db.commit()
     if not messages:
@@ -250,7 +253,7 @@ def sync_senders(db: Session = Depends(get_db)):
                         "label": f"[腾讯云] {email}"
                     })
         except Exception as e:
-            print(f"Tencent Senders Error: {e}")
+            print(f"Tencent Senders Error Detail: {traceback.format_exc()}")
     
     return senders
 
