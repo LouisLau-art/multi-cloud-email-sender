@@ -40,7 +40,7 @@ const Settings = () => {
             <Form.Item name="tencent_secret_id" label="Tencent Secret ID" style={{flex: 1}}><Input /></Form.Item>
             <Form.Item name="tencent_secret_key" label="Tencent Secret Key" style={{flex: 1}}><Input.Password /></Form.Item>
           </div>
-          <Form.Item name="tencent_region" label="腾讯云区域" initialValue="ap-guangzhou"><Input placeholder="ap-guangzhou" /></Form.Item>
+          <Form.Item name="tencent_region" label="腾讯云区域" initialValue="ap-hongkong"><Input placeholder="ap-hongkong" /></Form.Item>
           
           <hr style={{ border: '0.5px solid #eee', margin: '20px 0' }} />
           

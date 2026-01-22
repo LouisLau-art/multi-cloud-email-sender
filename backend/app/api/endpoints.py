@@ -21,7 +21,7 @@ class SettingUpdate(BaseModel):
     region_id: str = "cn-hangzhou"
     tencent_secret_id: Optional[str] = None
     tencent_secret_key: Optional[str] = None
-    tencent_region: str = "ap-guangzhou"
+    tencent_region: str = "ap-hongkong"
     from_alias: Optional[str] = None
 
 class TemplateCreate(BaseModel):

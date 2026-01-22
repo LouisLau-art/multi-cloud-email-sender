@@ -13,7 +13,7 @@ class Setting(Base):
     # Tencent
     tencent_secret_id = Column(String)
     tencent_secret_key = Column(String)
-    tencent_region = Column(String, default="ap-guangzhou")
+    tencent_region = Column(String, default="ap-hongkong")
     
     from_alias = Column(String)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
