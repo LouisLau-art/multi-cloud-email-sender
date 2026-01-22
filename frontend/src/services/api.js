@@ -1,10 +1,12 @@
 import axios from 'axios';
 
 // Determine Base URL
-// If running on port 5173 (Vite Dev Server), point to backend at 8000
+// If running on port 5173 (Vite Dev Server), point to backend at port 8000 on the same host
 // If running on port 8000 (Served by FastAPI), use relative path
 const isDev = window.location.port === '5173';
-const API_BASE_URL = isDev ? 'http://localhost:8000/api' : '/api';
+const API_BASE_URL = isDev 
+    ? `http://${window.location.hostname}:8000/api` 
+    : '/api';
 
 console.log(`API Base URL: ${API_BASE_URL}`);
 
