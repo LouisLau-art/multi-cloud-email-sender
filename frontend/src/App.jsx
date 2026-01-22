@@ -215,12 +215,81 @@ const Campaigns = () => {
     }).catch(e => message.error('加载发信地址失败'));
   };
 
-  // ... (handlers omitted)
+  const handleStart = (id) => {
+    api.post(`/campaigns/${id}/start`).then(() => {
+      message.success('任务已激活');
+      refresh();
+    });
+  };
+
+  const handleStop = (id) => {
+    api.post(`/campaigns/${id}/stop`).then(() => {
+      message.warning('任务已暂停');
+      refresh();
+    });
+  };
+  
+  const handleDelete = (id) => {
+      api.delete(`/campaigns/${id}`).then(() => {
+          message.success('任务已删除');
+          refresh();
+      });
+  };
+
+  const onFinish = (values) => {
+    // 处理 Select mode="tags" 返回数组的问题
+    let accName = values.account_name;
+    if (Array.isArray(accName)) {
+        accName = accName[0];
+    }
+
+    const payload = {
+      ...values,
+      account_name: accName,
+      batch_size: parseInt(values.batch_size, 10),
+      interval_minutes: parseInt(values.interval_minutes, 10),
+      scheduled_start_time: values.scheduled_start_time ? values.scheduled_start_time.toISOString() : null
+    };
+    api.post('/campaigns', payload).then(() => {
+      message.success('任务创建成功');
+      refresh();
+    }).catch(err => {
+        message.error('创建失败: ' + (err.response?.data?.detail || '参数错误'));
+    });
+  };
 
   // 根据当前选择的服务商过滤发信地址
   const filteredSenders = senders.filter(s => !selectedProvider || s.provider === selectedProvider);
 
-  // ... (columns omitted)
+  const columns = [
+    { title: '任务名称', dataIndex: 'name', key: 'name' },
+    { title: '发件人', dataIndex: 'from_alias', key: 'from', render: (t) => t || '(默认)' },
+    { title: '服务商', dataIndex: 'provider', key: 'provider', render: (text) => text === 'tencent' ? '腾讯云' : '阿里云' },
+    { title: '状态', dataIndex: 'status', key: 'status', render: (text) => {
+        const map = { pending: '等待中', sending: '发送中', completed: '已完成', paused: '已暂停', error: '错误', scheduled: '计划中' };
+        const color = { sending: 'green', completed: 'blue', pending: 'orange', paused: 'red', scheduled: 'purple' };
+        return <Tag color={color[text] || 'default'}>{map[text] || text}</Tag>;
+    }},
+    { title: '发送进度', key: 'progress', width: 150, render: (_, record) => (
+      <div>
+        <Progress percent={Math.round((record.sent_count / record.total_recipients) * 100)} size="small" />
+        <small>{record.sent_count} / {record.total_recipients}</small>
+      </div>
+    )},
+    // Fix timezone display by forcing UTC interpretation if needed
+    { title: '计划开始', dataIndex: 'scheduled_start_time', key: 'start', render: (t) => t ? new Date(t + (t.endsWith('Z') ? '' : 'Z')).toLocaleString('zh-CN', { hour12: false }) : '-' },
+    { title: '操作', key: 'action', render: (_, record) => (
+      <div style={{display: 'flex', gap: 5}}>
+        {record.status === 'pending' || record.status === 'paused' || record.status === 'scheduled' ? 
+        <Button type="primary" size="small" onClick={() => handleStart(record.id)}>{record.status === 'scheduled' ? '立即开始' : '开始发送'}</Button> :
+        record.status === 'sending' ?
+        <Button danger size="small" onClick={() => handleStop(record.id)}>暂停</Button> : null}
+        <Popconfirm title="确定删除吗？" onConfirm={() => handleDelete(record.id)}>
+            <Button size="small" danger type="text">删除</Button>
+        </Popconfirm>
+      </div>
+    )}
+  ];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
