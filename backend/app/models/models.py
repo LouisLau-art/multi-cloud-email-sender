@@ -42,6 +42,11 @@ class EmailTemplate(Base):
     subject = Column(String) # Supports ${name}
     body = Column(Text)      # Supports ${name}
     from_alias = Column(String) # Sender Name (e.g. "Marketing Team")
+    
+    # Template isolation
+    provider = Column(String, default="local") # 'aliyun', 'tencent', 'local'
+    provider_id = Column(String, nullable=True) # Cloud Template ID (e.g. 12345 or 'template_abc')
+    
     created_at = Column(DateTime, default=datetime.utcnow)
 
 class Campaign(Base):

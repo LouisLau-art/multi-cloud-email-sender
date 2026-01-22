@@ -54,13 +54,16 @@ class TemplateImport(BaseModel):
 
 # --- Utils ---
 def try_decode_base64(s):
-    """尝试解码 Base64 字符串，如果失败或不是 Base64 则原样返回"""
-    if not s:
-        return ""
+    """尝试解码 Base64 字符串，处理填充和编码异常"""
+    if not s or len(s) < 4:
+        return s
     try:
-        decoded = base64.b64decode(s).decode('utf-8')
-        return decoded
-    except (binascii.Error, UnicodeDecodeError):
+        # 预处理：去掉空白字符，处理填充
+        s = s.strip()
+        # 尝试解码
+        decoded_bytes = base64.b64decode(s, validate=False)
+        return decoded_bytes.decode('utf-8')
+    except:
         return s
 
 # --- Routes ---
@@ -155,7 +158,6 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
             client = TencentService.create_client(setting.tencent_secret_id, setting.tencent_secret_key, setting.tencent_region)
             detail_res = TencentService.get_template(client, int(data.template_id))
             detail_data = json.loads(detail_res.to_json_string())
-            print(f"DEBUG Import Template Detail: {json.dumps(detail_data, ensure_ascii=False)}")
             detail_content = detail_data.get('TemplateContent', {})
             title = detail_content.get('TemplateName') or detail_data.get('TemplateName') or f"Tencent-{data.template_id}"
             subject = detail_content.get('TemplateSubject', title)
@@ -177,12 +179,8 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
             return {"message": "模板已更新", "title": title}
         else:
             new_t = models.EmailTemplate(
-                title=title,
-                subject=subject,
-                body=body,
-                from_alias=setting.from_alias,
-                provider=data.provider,
-                provider_id=data.template_id
+                title=title, subject=subject, body=body,
+                from_alias=setting.from_alias, provider=data.provider, provider_id=data.template_id
             )
             db.add(new_t)
             db.commit()
@@ -197,7 +195,6 @@ def sync_templates(db: Session = Depends(get_db)):
     if not setting:
         raise HTTPException(status_code=400, detail="请先在设置中配置 AccessKey")
     
-    print(f"DEBUG SETTINGS: AliID={setting.access_key_id}, TenID={setting.tencent_secret_id}, TenRegion={setting.tencent_region}")
     messages = []
     
     # --- 1. Aliyun Sync ---
@@ -236,7 +233,6 @@ def sync_templates(db: Session = Depends(get_db)):
             client = TencentService.create_client(setting.tencent_secret_id, setting.tencent_secret_key, setting.tencent_region)
             res = TencentService.query_templates(client)
             data = json.loads(res.to_json_string())
-            print(f"DEBUG Tencent Sync Response: {json.dumps(data, ensure_ascii=False)}")
             templates_list = data.get("TemplatesMetadata", [])
             
             if templates_list:
@@ -247,7 +243,6 @@ def sync_templates(db: Session = Depends(get_db)):
                     try:
                         detail_res = TencentService.get_template(client, template_id)
                         detail_data = json.loads(detail_res.to_json_string())
-                        print(f"DEBUG Template {template_id} Detail: {json.dumps(detail_data, ensure_ascii=False)}")
                         detail_content = detail_data.get('TemplateContent', {})
                         existing = db.query(models.EmailTemplate).filter(models.EmailTemplate.title == template_name).first()
                         
@@ -288,7 +283,6 @@ def sync_senders(db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="请先在设置中配置 AccessKey")
     
     senders = []
-    # --- Aliyun ---
     if setting.access_key_id and setting.access_key_secret:
         try:
             client = AliyunService.create_client(setting.access_key_id, setting.access_key_secret, setting.region_id)
@@ -304,7 +298,6 @@ def sync_senders(db: Session = Depends(get_db)):
         except Exception as e:
             print(f"Aliyun Senders Error: {e}")
 
-    # --- Tencent ---
     if setting.tencent_secret_id and setting.tencent_secret_key:
         try:
             from ..services.tencent_service import TencentService
