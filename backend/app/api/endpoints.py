@@ -78,6 +78,7 @@ async def upload_contacts(file: UploadFile = File(...), list_name: str = Form(..
         contact_list = ContactService.process_csv(db, content, list_name)
         return {"id": contact_list.id, "count": contact_list.total_count}
     except Exception as e:
+        print(f"Upload Error Detail: {traceback.format_exc()}") # Debug Log
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/contacts")
