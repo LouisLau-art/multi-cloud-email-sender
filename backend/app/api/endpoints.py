@@ -206,6 +206,10 @@ def sync_templates(db: Session = Depends(get_db)):
 
     db.commit()
     if not messages:
+        # Check if any provider was configured but no templates found
+        if (setting.access_key_id and setting.access_key_secret) or \
+           (setting.tencent_secret_id and setting.tencent_secret_key):
+             return {"message": "同步完成。未发现新模板（请确认云端模板已审核通过）"}
         return {"message": "未配置任何云服务商，无法同步"}
     return {"message": " | ".join(messages)}
 

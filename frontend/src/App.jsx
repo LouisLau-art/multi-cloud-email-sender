@@ -325,7 +325,7 @@ const Campaigns = () => {
                   placeholder={selectedProvider === 'tencent' ? "请选择腾讯云域名" : "请选择阿里云发信地址"}
                   mode="tags" 
                   maxCount={1}
-                  onDropdownVisibleChange={(open) => open && loadSenders()}
+                  onOpenChange={(open) => open && loadSenders()}
                   options={filteredSenders}
                 />
               </Form.Item>
