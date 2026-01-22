@@ -8,13 +8,14 @@ from ..services.campaign_service import ContactService, CampaignService
 from ..services.aliyun_service import AliyunService
 from pydantic import BaseModel
 from ..core.scheduler import scheduler, send_campaign_batch
+import json
+import traceback
+import base64
+import binascii
 
 router = APIRouter()
 
 # --- Pydantic Models ---
-import json
-import traceback
-
 class SettingUpdate(BaseModel):
     access_key_id: Optional[str] = None
     access_key_secret: Optional[str] = None
@@ -47,6 +48,21 @@ class CampaignCreate(BaseModel):
     scheduled_start_time: Optional[datetime] = None
     from_alias: Optional[str] = None
 
+class TemplateImport(BaseModel):
+    provider: str # 'aliyun' or 'tencent'
+    template_id: str
+
+# --- Utils ---
+def try_decode_base64(s):
+    """尝试解码 Base64 字符串，如果失败或不是 Base64 则原样返回"""
+    if not s:
+        return ""
+    try:
+        decoded = base64.b64decode(s).decode('utf-8')
+        return decoded
+    except (binascii.Error, UnicodeDecodeError):
+        return s
+
 # --- Routes ---
 
 @router.post("/settings")
@@ -56,13 +72,13 @@ def update_settings(setting: SettingUpdate, db: Session = Depends(get_db)):
         existing = models.Setting()
         db.add(existing)
     
-    existing.access_key_id = setting.access_key_id
-    existing.access_key_secret = setting.access_key_secret
-    existing.region_id = setting.region_id
-    existing.tencent_secret_id = setting.tencent_secret_id
-    existing.tencent_secret_key = setting.tencent_secret_key
-    existing.tencent_region = setting.tencent_region
-    existing.from_alias = setting.from_alias
+    if setting.access_key_id is not None: existing.access_key_id = setting.access_key_id
+    if setting.access_key_secret is not None: existing.access_key_secret = setting.access_key_secret
+    if setting.region_id is not None: existing.region_id = setting.region_id
+    if setting.tencent_secret_id is not None: existing.tencent_secret_id = setting.tencent_secret_id
+    if setting.tencent_secret_key is not None: existing.tencent_secret_key = setting.tencent_secret_key
+    if setting.tencent_region is not None: existing.tencent_region = setting.tencent_region
+    if setting.from_alias is not None: existing.from_alias = setting.from_alias
     
     db.commit()
     return {"message": "Settings updated"}
@@ -78,7 +94,7 @@ async def upload_contacts(file: UploadFile = File(...), list_name: str = Form(..
         contact_list = ContactService.process_csv(db, content, list_name)
         return {"id": contact_list.id, "count": contact_list.total_count}
     except Exception as e:
-        print(f"Upload Error Detail: {traceback.format_exc()}") # Debug Log
+        print(f"Upload Error Detail: {traceback.format_exc()}")
         raise HTTPException(status_code=400, detail=str(e))
 
 @router.get("/contacts")
@@ -119,28 +135,6 @@ def update_template(id: int, template: TemplateUpdate, db: Session = Depends(get
 def get_templates(db: Session = Depends(get_db)):
     return db.query(models.EmailTemplate).all()
 
-class TemplateImport(BaseModel):
-    provider: str # 'aliyun' or 'tencent'
-    template_id: str
-
-import base64
-import binascii
-
-def try_decode_base64(s):
-    """尝试解码 Base64 字符串，如果失败或不是 Base64 则原样返回"""
-    if not s:
-        return ""
-    try:
-        # 尝试解码
-        decoded = base64.b64decode(s).decode('utf-8')
-        # 简单的启发式检查：如果解码后看起来像乱码（比如全是不可见字符），可能本身就不是 Base64
-        # 但通常腾讯云的 Base64 很标准。
-        # 为了防止把普通文本 "Hello" 误判为 Base64（虽然 "Hello" 是合法的 Base64，解码后是乱码），
-        # 我们可以检查解码后的字符串是否包含常见的 HTML 标签或中文
-        return decoded
-    except (binascii.Error, UnicodeDecodeError):
-        return s
-
 @router.post("/templates/import")
 def import_template(data: TemplateImport, db: Session = Depends(get_db)):
     setting = db.query(models.Setting).first()
@@ -149,12 +143,9 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
     
     try:
         if data.provider == 'aliyun':
-            # ... (Aliyun logic)
             client = AliyunService.create_client(setting.access_key_id, setting.access_key_secret, setting.region_id)
-            # Aliyun Template ID is usually integer
             detail_res = AliyunService.desc_template(client, int(data.template_id))
             detail = detail_res.body
-            
             title = detail.template_name
             subject = detail.template_subject
             body = detail.template_text
@@ -162,24 +153,17 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
         elif data.provider == 'tencent':
             from ..services.tencent_service import TencentService
             client = TencentService.create_client(setting.tencent_secret_id, setting.tencent_secret_key, setting.tencent_region)
-            # Tencent Template ID is integer in V20201002
             detail_res = TencentService.get_template(client, int(data.template_id))
             detail_data = json.loads(detail_res.to_json_string())
             print(f"DEBUG Import Template Detail: {json.dumps(detail_data, ensure_ascii=False)}")
-            
             detail_content = detail_data.get('TemplateContent', {})
-            
-            # 腾讯云返回的 TemplateName 可能在外层，也可能在 Content 里
             title = detail_content.get('TemplateName') or detail_data.get('TemplateName') or f"Tencent-{data.template_id}"
             subject = detail_content.get('TemplateSubject', title)
-            
-            # 自动解码 Base64
             raw_body = detail_content.get('Html') or detail_content.get('Text') or "No Content"
             body = try_decode_base64(raw_body)
         else:
             raise HTTPException(status_code=400, detail="Unknown provider")
 
-        # Save to DB
         existing = db.query(models.EmailTemplate).filter(
             models.EmailTemplate.provider == data.provider,
             models.EmailTemplate.provider_id == data.template_id
@@ -203,7 +187,6 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
             db.add(new_t)
             db.commit()
             return {"message": "模板已导入", "title": title}
-
     except Exception as e:
         print(f"Import Error: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
@@ -214,9 +197,7 @@ def sync_templates(db: Session = Depends(get_db)):
     if not setting:
         raise HTTPException(status_code=400, detail="请先在设置中配置 AccessKey")
     
-    # --- DEBUG: Print Settings to Console ---
     print(f"DEBUG SETTINGS: AliID={setting.access_key_id}, TenID={setting.tencent_secret_id}, TenRegion={setting.tencent_region}")
-    
     messages = []
     
     # --- 1. Aliyun Sync ---
@@ -230,15 +211,11 @@ def sync_templates(db: Session = Depends(get_db)):
                     existing = db.query(models.EmailTemplate).filter(models.EmailTemplate.title == t.template_name).first()
                     detail_res = AliyunService.desc_template(client, int(t.template_id))
                     detail = detail_res.body
-                    
                     if not existing:
                         new_t = models.EmailTemplate(
-                            title=detail.template_name,
-                            subject=detail.template_subject,
-                            body=detail.template_text,
-                            from_alias=setting.from_alias,
-                            provider='aliyun',
-                            provider_id=str(t.template_id)
+                            title=detail.template_name, subject=detail.template_subject,
+                            body=detail.template_text, from_alias=setting.from_alias,
+                            provider='aliyun', provider_id=str(t.template_id)
                         )
                         db.add(new_t)
                         count += 1
@@ -258,69 +235,40 @@ def sync_templates(db: Session = Depends(get_db)):
             from ..services.tencent_service import TencentService
             client = TencentService.create_client(setting.tencent_secret_id, setting.tencent_secret_key, setting.tencent_region)
             res = TencentService.query_templates(client)
-            
-            # Fix: Parse Tencent response as JSON dict
             data = json.loads(res.to_json_string())
-            print(f"DEBUG Tencent Sync Response: {json.dumps(data, ensure_ascii=False)}") # Debug Log
-            
-            # 腾讯云返回的字段是 TemplatesMetadata
+            print(f"DEBUG Tencent Sync Response: {json.dumps(data, ensure_ascii=False)}")
             templates_list = data.get("TemplatesMetadata", [])
             
             if templates_list:
                 count = 0
                 for t in templates_list:
-                    # t is a dict: {'TemplateID': ..., 'TemplateName': ...}
                     template_id = t.get('TemplateID')
                     template_name = t.get('TemplateName')
-                    
                     try:
                         detail_res = TencentService.get_template(client, template_id)
                         detail_data = json.loads(detail_res.to_json_string())
-                        # 打印详情结构以便调试
                         print(f"DEBUG Template {template_id} Detail: {json.dumps(detail_data, ensure_ascii=False)}")
-                        
                         detail_content = detail_data.get('TemplateContent', {})
-                        
                         existing = db.query(models.EmailTemplate).filter(models.EmailTemplate.title == template_name).first()
                         
-                    # Fallback for Subject (Standard SES templates might not store it)
-                    subject = "来自腾讯云的模板"
-                    if 'TemplateSubject' in detail_content:
-                         subject = detail_content['TemplateSubject']
-                    
-                    raw_body = detail_content.get('Html') or detail_content.get('Text') or "No Content"
-                    body = try_decode_base64(raw_body)
-                    
-                    if not existing:
+                        subject = detail_content.get('TemplateSubject', template_name)
+                        raw_body = detail_content.get('Html') or detail_content.get('Text') or "No Content"
+                        body = try_decode_base64(raw_body)
+                        
+                        if not existing:
                             new_t = models.EmailTemplate(
-                                title=template_name,
-                                subject=subject,
-                                body=body,
-                                from_alias=setting.from_alias,
-                                provider='tencent',
-                                provider_id=str(template_id)
+                                title=template_name, subject=subject, body=body,
+                                from_alias=setting.from_alias, provider='tencent', provider_id=str(template_id)
                             )
                             db.add(new_t)
                             count += 1
                         else:
+                            existing.subject = subject
                             existing.body = body
                             existing.provider = 'tencent'
                             existing.provider_id = str(template_id)
                     except Exception as e:
                         print(f"Failed to get details for template {template_id}: {e}")
-                        # 即使详情获取失败，也尝试保存基本信息
-                        if not db.query(models.EmailTemplate).filter(models.EmailTemplate.title == template_name).first():
-                             new_t = models.EmailTemplate(
-                                title=template_name,
-                                subject=template_name,
-                                body="内容获取失败，请尝试重新同步或手动导入",
-                                from_alias=setting.from_alias,
-                                provider='tencent',
-                                provider_id=str(template_id)
-                            )
-                             db.add(new_t)
-                             count += 1
-                
                 messages.append(f"腾讯云同步 {count} 个")
         except Exception as e:
             print(f"Tencent Sync Error Detail: {traceback.format_exc()}")
@@ -328,9 +276,7 @@ def sync_templates(db: Session = Depends(get_db)):
 
     db.commit()
     if not messages:
-        # Check if any provider was configured but no templates found
-        if (setting.access_key_id and setting.access_key_secret) or \
-           (setting.tencent_secret_id and setting.tencent_secret_key):
+        if (setting.access_key_id and setting.access_key_secret) or (setting.tencent_secret_id and setting.tencent_secret_key):
              return {"message": "同步完成。未发现新模板（请确认云端模板已审核通过）"}
         return {"message": "未配置任何云服务商，无法同步"}
     return {"message": " | ".join(messages)}
@@ -342,7 +288,6 @@ def sync_senders(db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="请先在设置中配置 AccessKey")
     
     senders = []
-    
     # --- Aliyun ---
     if setting.access_key_id and setting.access_key_secret:
         try:
@@ -353,9 +298,7 @@ def sync_senders(db: Session = Depends(get_db)):
                     status_map = {'0': '正常', '1': '冻结', '2': '待验证'}
                     status_str = status_map.get(str(addr.account_status), str(addr.account_status))
                     senders.append({
-                        "email": addr.account_name, 
-                        "provider": "aliyun", 
-                        "status": status_str,
+                        "email": addr.account_name, "provider": "aliyun", "status": status_str,
                         "label": f"[阿里云] {addr.account_name} ({status_str})"
                     })
         except Exception as e:
@@ -367,39 +310,25 @@ def sync_senders(db: Session = Depends(get_db)):
             from ..services.tencent_service import TencentService
             client = TencentService.create_client(setting.tencent_secret_id, setting.tencent_secret_key, setting.tencent_region)
             res = TencentService.query_senders(client)
-            
-            # Fix: Parse Tencent response as JSON dict
             data = json.loads(res.to_json_string())
-            
             if "EmailIdentities" in data and data["EmailIdentities"]:
                 for identity in data["EmailIdentities"]:
-                    # identity is a dict: {'IdentityName': '...', 'IdentityType': ...}
                     email = identity.get('IdentityName')
                     senders.append({
-                        "email": email,
-                        "provider": "tencent",
-                        "status": "已验证", 
+                        "email": email, "provider": "tencent", "status": "已验证", 
                         "label": f"[腾讯云] {email}"
                     })
         except Exception as e:
             print(f"Tencent Senders Error Detail: {traceback.format_exc()}")
-    
     return senders
 
 @router.post("/campaigns")
 def create_campaign(campaign: CampaignCreate, db: Session = Depends(get_db)):
     print(f"Creating campaign with data: {campaign}")
     return CampaignService.create_campaign(
-        db, 
-        campaign.name, 
-        campaign.template_id, 
-        campaign.list_id, 
-        campaign.account_name,
-        campaign.batch_size,
-        campaign.interval_minutes,
-        campaign.scheduled_start_time,
-        campaign.from_alias,
-        campaign.provider
+        db, campaign.name, campaign.template_id, campaign.list_id, campaign.account_name,
+        campaign.batch_size, campaign.interval_minutes, campaign.scheduled_start_time,
+        campaign.from_alias, campaign.provider
     )
 
 @router.get("/campaigns")
@@ -411,7 +340,6 @@ def start_campaign(id: int, db: Session = Depends(get_db)):
     campaign = db.query(models.Campaign).filter(models.Campaign.id == id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    
     if campaign.scheduled_start_time and campaign.scheduled_start_time > datetime.utcnow():
         campaign.status = "scheduled"
         db.commit()
