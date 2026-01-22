@@ -175,7 +175,7 @@ const Templates = () => {
           </div>
         </Form>
       </Card>
-      <Card title="已有模板" style={{ flex: 1 }} extra={<Button icon={<RocketOutlined />} onClick={handleSync}>从阿里云同步</Button>}>
+      <Card title="已有模板" style={{ flex: 1 }} extra={<Button icon={<RocketOutlined />} onClick={handleSync}>同步云端模板</Button>}>
         <Table dataSource={templates} columns={columns} rowKey="id" />
       </Card>
     </div>

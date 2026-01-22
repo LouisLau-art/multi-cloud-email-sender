@@ -124,6 +124,9 @@ def sync_templates(db: Session = Depends(get_db)):
     if not setting:
         raise HTTPException(status_code=400, detail="请先在设置中配置 AccessKey")
     
+    # --- DEBUG: Print Settings to Console ---
+    print(f"DEBUG SETTINGS: AliID={setting.access_key_id}, TenID={setting.tencent_secret_id}, TenRegion={setting.tencent_region}")
+    
     messages = []
     
     # --- 1. Aliyun Sync ---
