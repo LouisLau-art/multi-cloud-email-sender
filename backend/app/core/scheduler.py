@@ -138,16 +138,35 @@ def send_campaign_batch():
                             from_alias=real_from_alias
                         )
                     elif campaign.provider == 'tencent':
-                        TencentService.send_mail(
-                            secret_id=setting.tencent_secret_id,
-                            secret_key=setting.tencent_secret_key,
-                            region=setting.tencent_region,
-                            from_email=campaign.account_name,
-                            to_email=clean_to_address,
-                            subject=subject,
-                            html_body=body,
-                            from_alias=real_from_alias
-                        )
+                        # Check if we should use Template Mode (Preferred for Tencent)
+                        if template.provider == 'tencent' and template.provider_id:
+                            # Construct TemplateParams JSON
+                            template_params_json = json.dumps(vars_map)
+                            
+                            TencentService.send_mail(
+                                secret_id=setting.tencent_secret_id,
+                                secret_key=setting.tencent_secret_key,
+                                region=setting.tencent_region,
+                                from_email=campaign.account_name,
+                                to_email=clean_to_address,
+                                subject=subject, # Tencent API allows overriding template subject
+                                html_body="", # No HTML body needed for template mode
+                                from_alias=real_from_alias,
+                                template_id=template.provider_id,
+                                template_params=template_params_json
+                            )
+                        else:
+                            # Fallback to Custom HTML Mode (Requires Permission)
+                            TencentService.send_mail(
+                                secret_id=setting.tencent_secret_id,
+                                secret_key=setting.tencent_secret_key,
+                                region=setting.tencent_region,
+                                from_email=campaign.account_name,
+                                to_email=clean_to_address,
+                                subject=subject,
+                                html_body=body,
+                                from_alias=real_from_alias
+                            )
                     
                     logger.info(f"✅ SUCCESS: {clean_to_address}")
                     
