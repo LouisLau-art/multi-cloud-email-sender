@@ -146,11 +146,14 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
             # Tencent Template ID is integer in V20201002
             detail_res = TencentService.get_template(client, int(data.template_id))
             detail_data = json.loads(detail_res.to_json_string())
+            print(f"DEBUG Import Template Detail: {json.dumps(detail_data, ensure_ascii=False)}")
+            
             detail_content = detail_data.get('TemplateContent', {})
             
-            title = detail_content.get('TemplateName', f"Tencent-{data.template_id}")
+            # 腾讯云返回的 TemplateName 可能在外层，也可能在 Content 里
+            title = detail_content.get('TemplateName') or detail_data.get('TemplateName') or f"Tencent-{data.template_id}"
             subject = detail_content.get('TemplateSubject', title)
-            body = detail_content.get('Html', 'No Content')
+            body = detail_content.get('Html') or detail_content.get('Text') or "No Content"
         else:
             raise HTTPException(status_code=400, detail="Unknown provider")
 
@@ -238,41 +241,64 @@ def sync_templates(db: Session = Depends(get_db)):
             data = json.loads(res.to_json_string())
             print(f"DEBUG Tencent Sync Response: {json.dumps(data, ensure_ascii=False)}") # Debug Log
             
-            if "Templates" in data and data["Templates"]:
+            # 腾讯云返回的字段是 TemplatesMetadata
+            templates_list = data.get("TemplatesMetadata", [])
+            
+            if templates_list:
                 count = 0
-                for t in data["Templates"]:
+                for t in templates_list:
                     # t is a dict: {'TemplateID': ..., 'TemplateName': ...}
                     template_id = t.get('TemplateID')
                     template_name = t.get('TemplateName')
                     
-                    detail_res = TencentService.get_template(client, template_id)
-                    detail_data = json.loads(detail_res.to_json_string())
-                    detail_content = detail_data.get('TemplateContent', {})
-                    
-                    existing = db.query(models.EmailTemplate).filter(models.EmailTemplate.title == template_name).first()
-                    
-                    # Fallback for Subject (Standard SES templates might not store it)
-                    subject = "来自腾讯云的模板"
-                    if 'TemplateSubject' in detail_content:
-                         subject = detail_content['TemplateSubject']
-                    
-                    body = detail_content.get('Html', 'No Content')
-                    
-                    if not existing:
-                        new_t = models.EmailTemplate(
-                            title=template_name,
-                            subject=subject,
-                            body=body,
-                            from_alias=setting.from_alias,
-                            provider='tencent',
-                            provider_id=str(template_id)
-                        )
-                        db.add(new_t)
-                        count += 1
-                    else:
-                        existing.body = body
-                        existing.provider = 'tencent'
-                        existing.provider_id = str(template_id)
+                    try:
+                        detail_res = TencentService.get_template(client, template_id)
+                        detail_data = json.loads(detail_res.to_json_string())
+                        # 打印详情结构以便调试
+                        print(f"DEBUG Template {template_id} Detail: {json.dumps(detail_data, ensure_ascii=False)}")
+                        
+                        detail_content = detail_data.get('TemplateContent', {})
+                        
+                        existing = db.query(models.EmailTemplate).filter(models.EmailTemplate.title == template_name).first()
+                        
+                        # Fallback for Subject
+                        subject = template_name # 默认使用模板名称作为标题
+                        if 'TemplateSubject' in detail_content:
+                             subject = detail_content['TemplateSubject']
+                        
+                        # 优先取 HTML，没有则取 Text
+                        body = detail_content.get('Html') or detail_content.get('Text') or "No Content"
+                        
+                        if not existing:
+                            new_t = models.EmailTemplate(
+                                title=template_name,
+                                subject=subject,
+                                body=body,
+                                from_alias=setting.from_alias,
+                                provider='tencent',
+                                provider_id=str(template_id)
+                            )
+                            db.add(new_t)
+                            count += 1
+                        else:
+                            existing.body = body
+                            existing.provider = 'tencent'
+                            existing.provider_id = str(template_id)
+                    except Exception as e:
+                        print(f"Failed to get details for template {template_id}: {e}")
+                        # 即使详情获取失败，也尝试保存基本信息
+                        if not db.query(models.EmailTemplate).filter(models.EmailTemplate.title == template_name).first():
+                             new_t = models.EmailTemplate(
+                                title=template_name,
+                                subject=template_name,
+                                body="内容获取失败，请尝试重新同步或手动导入",
+                                from_alias=setting.from_alias,
+                                provider='tencent',
+                                provider_id=str(template_id)
+                            )
+                             db.add(new_t)
+                             count += 1
+                
                 messages.append(f"腾讯云同步 {count} 个")
         except Exception as e:
             print(f"Tencent Sync Error Detail: {traceback.format_exc()}")
