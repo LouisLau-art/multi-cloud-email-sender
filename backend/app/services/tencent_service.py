@@ -3,6 +3,7 @@ from tencentcloud.common.profile.client_profile import ClientProfile
 from tencentcloud.common.profile.http_profile import HttpProfile
 from tencentcloud.ses.v20201002 import ses_client, models
 import json
+import base64
 
 class TencentService:
     @staticmethod
@@ -34,13 +35,19 @@ class TencentService:
         if "@" not in from_email:
             real_from_email = f"notification@{from_email}"
 
-        # 使用 JSON 字符串初始化请求对象，这是最稳妥且能避开 SDK 版本差异的方法
+        # 腾讯云要求 Html 内容必须是 Base64 编码
+        if html_body:
+            html_base64 = base64.b64encode(html_body.encode('utf-8')).decode('utf-8')
+        else:
+            html_base64 = ""
+
+        # 使用 JSON 字符串初始化请求对象
         params = {
             "FromEmailAddress": f"{from_alias} <{real_from_email}>" if from_alias else real_from_email,
             "Destination": [to_email],
             "Subject": subject,
             "Simple": {
-                "Html": html_body
+                "Html": html_base64
             }
         }
         req.from_json_string(json.dumps(params))
