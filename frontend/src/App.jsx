@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal } from 'antd';
+import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal, Tabs } from 'antd';
 import { UploadOutlined, UserOutlined, MailOutlined, SettingOutlined, RocketOutlined, EditOutlined, DeleteOutlined } from '@ant-design/icons';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import api, { contactApi } from './services/api';
@@ -188,7 +188,31 @@ const Templates = () => {
           <Form.Item name="title" label="模板名称 (内部标识)" required><Input placeholder="例如：元旦促销模板" /></Form.Item>
           <Form.Item name="from_alias" label="发送人名称" required tooltip="例如：阿里云通知。收件人看到的邮件来源名称"><Input placeholder="例如：市场部" /></Form.Item>
           <Form.Item name="subject" label="邮件标题" required tooltip="使用 {Name} 代表收件人姓名，或 CSV 中的其他列名如 {Birthday}"><Input placeholder="例如：你好 {Name}，这是给你的专属优惠" /></Form.Item>
-          <Form.Item name="body" label="邮件正文 (支持 HTML)" required tooltip="使用 {Name} 代表收件人姓名"><TextArea rows={6} placeholder="<html><body><h1>你好 {Name}!</h1></body></html>" /></Form.Item>
+          <Form.Item label="邮件正文 (支持 HTML)" required tooltip="使用 {Name} 代表收件人姓名">
+            <Tabs defaultActiveKey="1" items={[
+                {
+                    key: '1', label: '编辑代码', children: (
+                        <Form.Item name="body" noStyle>
+                            <TextArea rows={15} placeholder="<html><body><h1>你好 {Name}!</h1></body></html>" style={{fontFamily: 'monospace'}} />
+                        </Form.Item>
+                    )
+                },
+                {
+                    key: '2', label: '预览效果', children: (
+                        <Form.Item shouldUpdate={(prev, curr) => prev.body !== curr.body}>
+                            {({ getFieldValue }) => {
+                                const html = getFieldValue('body') || '';
+                                return (
+                                    <div style={{border: '1px solid #d9d9d9', borderRadius: 6, padding: 10, minHeight: 330, background: '#fff'}}>
+                                        <div dangerouslySetInnerHTML={{__html: html}} />
+                                    </div>
+                                );
+                            }}
+                        </Form.Item>
+                    )
+                }
+            ]} />
+          </Form.Item>
           <div style={{display: 'flex', gap: 10}}>
               <Button type="primary" htmlType="submit">{editingId ? "更新模板" : "创建模板"}</Button>
               {editingId && <Button onClick={handleCancelEdit}>取消</Button>}
