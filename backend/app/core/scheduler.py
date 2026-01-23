@@ -10,6 +10,7 @@ import time
 from datetime import datetime
 import random
 import re
+import uuid
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -95,6 +96,20 @@ def send_campaign_batch():
                 if campaign.status != "sending":
                     break
 
+                clean_to_address = contact.email.split()[0].strip()
+                tracking_id = str(uuid.uuid4())
+
+                # 记录发送日志
+                recipient = models.CampaignRecipient(
+                    campaign_id=campaign.id,
+                    contact_id=contact.id,
+                    email=clean_to_address,
+                    tracking_id=tracking_id,
+                    status="sending",
+                )
+                db.add(recipient)
+                db.commit()  # 先提交以获得 ID (虽然这里 UUID 够用了)
+
                 # 准备变量
                 vars_map = json.loads(contact.extra_vars) if contact.extra_vars else {}
                 if contact.name:
@@ -118,12 +133,21 @@ def send_campaign_batch():
                     or setting.from_alias
                     or campaign.account_name.split("@")[0]
                 )
-                clean_to_address = contact.email.split()[0].strip()
+
+                # 追踪像素 URL (假设运行在本地或内网 IP)
+                # TODO: 应该从配置中读取 Base URL
+                track_base_url = "http://192.168.2.8:8000"
+                pixel_url = f"{track_base_url}/api/track/open/{tracking_id}"
+                pixel_html = f'<img src="{pixel_url}" width="1" height="1" style="display:none" />'
 
                 try:
                     if campaign.provider == "tencent":
                         if template.provider == "tencent" and template.provider_id:
                             # 腾讯云模板模式
+                            # 尝试注入 pixel 到变量中，如果模板支持 {{tracking_pixel}}
+                            # 但大多数时候模板不支持，所以模板模式的追踪比较困难，除非模板里预留了位置
+                            # 这里暂时跳过模板模式的像素注入，或者仅仅依赖 send_mail 成功
+
                             TencentService.send_mail(
                                 setting.tencent_secret_id,
                                 setting.tencent_secret_key,
@@ -147,6 +171,12 @@ def send_campaign_batch():
                             # 清理未匹配的变量 (只清理看起来像变量的，避免破坏 CSS/JS)
                             body = re.sub(r"\{([\w\s]+)\}", r"\1", body)
 
+                            # 注入像素
+                            if "</body>" in body:
+                                body = body.replace("</body>", f"{pixel_html}</body>")
+                            else:
+                                body += pixel_html
+
                             TencentService.send_mail(
                                 setting.tencent_secret_id,
                                 setting.tencent_secret_key,
@@ -167,6 +197,12 @@ def send_campaign_batch():
                         # 清理未匹配的变量 (只清理看起来像变量的，避免破坏 CSS/JS)
                         body = re.sub(r"\{([\w\s]+)\}", r"\1", body)
 
+                        # 注入像素
+                        if "</body>" in body:
+                            body = body.replace("</body>", f"{pixel_html}</body>")
+                        else:
+                            body += pixel_html
+
                         # 阿里云: 如果 campaign.reply_to_address 有值，则认为开启回信地址功能 (True)
                         use_reply_to = True if campaign.reply_to_address else False
 
@@ -182,9 +218,17 @@ def send_campaign_batch():
                         )
 
                     logger.info(f"[{i + 1}/{len(contacts)}] Sent to {clean_to_address}")
+                    # 更新状态为 sent
+                    recipient.status = "sent"
+                    recipient.sent_at = datetime.utcnow()
+                    db.commit()
+
                     time.sleep(random.uniform(0.2, 1.0))
                 except Exception as e:
                     logger.error(f"❌ FAILED: {clean_to_address} - {e}")
+                    recipient.status = "failed"
+                    recipient.error_message = str(e)
+                    db.commit()
 
             # 更新进度
             campaign.sent_count += len(contacts)

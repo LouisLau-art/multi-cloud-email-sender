@@ -1,12 +1,179 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal, Tabs, Divider, Space } from 'antd';
-import { UploadOutlined, UserOutlined, MailOutlined, SettingOutlined, RocketOutlined, EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal, Tabs, Divider, Space, Radio, Empty } from 'antd';
+import { UploadOutlined, UserOutlined, MailOutlined, SettingOutlined, RocketOutlined, EditOutlined, DeleteOutlined, PlusOutlined, PieChartOutlined, CheckCircleOutlined, SyncOutlined, CloseCircleOutlined, EyeOutlined, DownloadOutlined } from '@ant-design/icons';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-import api, { contactApi, settingsApi } from './services/api';
+// import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, Legend, ResponsiveContainer } from 'recharts';
+import api, { contactApi, settingsApi, dashboardApi } from './services/api';
 import dayjs from 'dayjs';
 
 const { Header, Content, Sider } = Layout;
 const { TextArea } = Input;
+
+// --- Dashboard Component ---
+const Dashboard = () => {
+    const [stats, setStats] = useState(null);
+    const [chartData, setChartData] = useState([]);
+    const [details, setDetails] = useState({ items: [], total: 0, page: 1, size: 10 });
+    const [loading, setLoading] = useState(false);
+    const [chartRange, setChartRange] = useState(7); // Days
+    const [detailFilter, setDetailFilter] = useState('all'); // all, sent, failed, opened, clicked
+    const [searchText, setSearchText] = useState('');
+
+    useEffect(() => {
+        loadStats();
+        loadChart();
+        loadDetails(1, 10, searchText, detailFilter);
+    }, []);
+
+    useEffect(() => {
+        loadChart();
+    }, [chartRange]);
+
+    useEffect(() => {
+        loadDetails(1, 10, searchText, detailFilter);
+    }, [detailFilter]); // Search triggers manually
+
+    const loadStats = () => {
+        dashboardApi.getStats().then(res => setStats(res.data));
+    };
+
+    const loadChart = () => {
+        dashboardApi.getChartData(chartRange).then(res => setChartData(res.data));
+    };
+
+    const loadDetails = (page, size, search, status) => {
+        setLoading(true);
+        const statusParam = status === 'all' ? null : status;
+        dashboardApi.getDetails(page, size, search, statusParam).then(res => {
+            setDetails(res.data);
+            setLoading(false);
+        });
+    };
+
+    const handleSearch = (value) => {
+        setSearchText(value);
+        loadDetails(1, details.size, value, detailFilter);
+    };
+
+    const handleExport = () => {
+        const baseUrl = api.defaults.baseURL.startsWith('http') ? api.defaults.baseURL : window.location.origin + api.defaults.baseURL;
+        window.open(`${baseUrl}/dashboard/export`, '_blank');
+    };
+
+    const columns = [
+        { title: '邮箱地址', dataIndex: 'email', key: 'email' },
+        { 
+            title: '状态', 
+            dataIndex: 'status', 
+            key: 'status',
+            render: (text) => {
+                const map = { sent: '已发送', failed: '发送失败', opened: '已打开', clicked: '已点击', pending: '等待中' };
+                const color = { sent: 'blue', failed: 'red', opened: 'green', clicked: 'purple', pending: 'default' };
+                return <Tag color={color[text] || 'default'}>{map[text] || text}</Tag>; 
+            }
+        },
+        { 
+            title: '发送时间', 
+            dataIndex: 'sent_at', 
+            key: 'sent_at',
+            render: (t) => t ? new Date(t + 'Z').toLocaleString('zh-CN', { hour12: false }) : '-'
+        },
+        { 
+            title: '打开时间', 
+            dataIndex: 'opened_at', 
+            key: 'opened_at',
+            render: (t) => t ? new Date(t + 'Z').toLocaleString('zh-CN', { hour12: false }) : '-'
+        },
+        { 
+            title: '点击时间', 
+            dataIndex: 'clicked_at', 
+            key: 'clicked_at',
+            render: (t) => t ? new Date(t + 'Z').toLocaleString('zh-CN', { hour12: false }) : '-'
+        },
+        { title: '错误信息', dataIndex: 'error_message', key: 'error', ellipsis: true }
+    ];
+
+    if (!stats) return <div style={{padding: 50, textAlign: 'center'}}><SyncOutlined spin /> 加载数据中...</div>;
+
+    return (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            {/* Stats Cards */}
+            <Row gutter={16}>
+                <Col span={4}>
+                    <Card>
+                        <Statistic title="收件人数" value={stats.total_recipients} prefix={<UserOutlined />} />
+                    </Card>
+                </Col>
+                <Col span={5}>
+                    <Card>
+                        <Statistic title="发送封数" value={stats.sent_count} prefix={<RocketOutlined />} suffix={<span style={{fontSize: 12, color: '#999'}}>送达率 {stats.delivery_rate}%</span>} />
+                    </Card>
+                </Col>
+                <Col span={5}>
+                    <Card>
+                        <Statistic title="送达封数" value={stats.delivered_count} prefix={<CheckCircleOutlined style={{color: 'green'}} />} />
+                    </Card>
+                </Col>
+                <Col span={5}>
+                    <Card>
+                        <Statistic title="打开封数" value={stats.opened_count} prefix={<EyeOutlined style={{color: 'orange'}} />} suffix={<span style={{fontSize: 12, color: '#999'}}>打开率 {stats.open_rate}%</span>} />
+                    </Card>
+                </Col>
+                <Col span={5}>
+                    <Card>
+                        <Statistic title="点击人数" value={stats.clicked_count} prefix={<PieChartOutlined style={{color: 'purple'}} />} suffix={<span style={{fontSize: 12, color: '#999'}}>点击率 {stats.click_rate}%</span>} />
+                    </Card>
+                </Col>
+            </Row>
+
+            {/* Chart */}
+            <Card title="任务效果 - 最近营销邮件表现" extra={
+                <Radio.Group value={chartRange} onChange={e => setChartRange(e.target.value)}>
+                    <Radio.Button value={1}>24小时</Radio.Button>
+                    <Radio.Button value={7}>7天</Radio.Button>
+                    <Radio.Button value={30}>30天</Radio.Button>
+                </Radio.Group>
+            }>
+                <div style={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9f9f9' }}>
+                    {/* Recharts Temporarily Disabled */}
+                    <div>图表区域 (Recharts 已禁用以排查问题)</div>
+                </div>
+            </Card>
+
+            {/* Details Table */}
+            <Card title="详细数据" extra={
+                <div style={{display: 'flex', gap: 10}}>
+                    <Button icon={<DownloadOutlined />} onClick={handleExport}>导出 CSV</Button>
+                    <Input.Search placeholder="搜索联系人" onSearch={handleSearch} style={{ width: 200 }} />
+                </div>
+            }>
+                <Tabs 
+                    activeKey={detailFilter} 
+                    onChange={setDetailFilter}
+                    items={[
+                        { key: 'all', label: '全部' },
+                        { key: 'sent', label: '已发送' },
+                        { key: 'opened', label: '已打开' },
+                        { key: 'clicked', label: '已点击' },
+                        { key: 'failed', label: '发送失败' },
+                    ]}
+                />
+                <Table 
+                    columns={columns} 
+                    dataSource={details.items} 
+                    rowKey="id" 
+                    loading={loading}
+                    pagination={{
+                        current: details.page,
+                        pageSize: details.size,
+                        total: details.total,
+                        onChange: (p, s) => loadDetails(p, s, searchText, detailFilter)
+                    }}
+                />
+            </Card>
+        </div>
+    );
+};
 
 // --- Components ---
 
@@ -499,7 +666,8 @@ const App = () => {
   } = theme.useToken();
 
   const menuItems = [
-    { key: '/', icon: <RocketOutlined />, label: '邮件任务' },
+    { key: '/', icon: <PieChartOutlined />, label: '数据看板' }, // Changed to Dashboard
+    { key: '/campaigns', icon: <RocketOutlined />, label: '发信任务' }, // Renamed path
     { key: '/contacts', icon: <UserOutlined />, label: '联系人管理' },
     { key: '/templates', icon: <MailOutlined />, label: '模板管理' },
     { key: '/settings', icon: <SettingOutlined />, label: '系统设置' },
@@ -515,7 +683,8 @@ const App = () => {
         <Header style={{ padding: 0, background: colorBgContainer }} />
         <Content style={{ margin: '16px' }}>
           <Routes>
-            <Route path="/" element={<Campaigns />} />
+            <Route path="/" element={<Dashboard />} /> {/* New Home */}
+            <Route path="/campaigns" element={<Campaigns />} /> {/* Moved Campaigns */}
             <Route path="/contacts" element={<Contacts />} />
             <Route path="/templates" element={<Templates />} />
             <Route path="/settings" element={<Settings />} />

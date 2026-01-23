@@ -4,10 +4,16 @@ import { BrowserRouter } from 'react-router-dom'
 import App from './App.jsx'
 import 'antd/dist/reset.css';
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <BrowserRouter>
-      <App />
-    </BrowserRouter>
-  </React.StrictMode>,
-)
+console.log('Main entry point loaded');
+
+try {
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(
+        <BrowserRouter>
+            <App />
+        </BrowserRouter>
+    );
+    console.log('React root rendered');
+} catch (e) {
+    console.error('React render failed:', e);
+}

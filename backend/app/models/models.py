@@ -110,3 +110,31 @@ class CampaignBatch(Base):
     sent_at = Column(DateTime)
 
     campaign = relationship("Campaign", back_populates="batches")
+
+
+class CampaignRecipient(Base):
+    __tablename__ = "campaign_recipients"
+    id = Column(Integer, primary_key=True, index=True)
+    campaign_id = Column(Integer, ForeignKey("campaigns.id"))
+    contact_id = Column(Integer, ForeignKey("contacts.id"), nullable=True)
+    email = Column(String, index=True)
+    status = Column(
+        String, default="sent"
+    )  # sent, failed, opened, clicked, unsubscribed
+
+    error_message = Column(Text, nullable=True)
+
+    sent_at = Column(DateTime, default=datetime.utcnow)
+    opened_at = Column(DateTime, nullable=True)
+    clicked_at = Column(DateTime, nullable=True)
+
+    # Unique ID for tracking pixel/links (e.g. UUID)
+    tracking_id = Column(String, unique=True, index=True)
+
+    campaign = relationship("Campaign", back_populates="recipients")
+
+
+# Update Campaign relationship
+Campaign.recipients = relationship(
+    "CampaignRecipient", back_populates="campaign", cascade="all, delete-orphan"
+)

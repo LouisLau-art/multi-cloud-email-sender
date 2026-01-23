@@ -58,4 +58,10 @@ export const settingsApi = {
     addReplyTo: (address) => api.post('/settings/reply_tos', { address }),
 };
 
+export const dashboardApi = {
+    getStats: () => api.get('/dashboard/stats'),
+    getChartData: (days) => api.get('/dashboard/chart', { params: { days } }),
+    getDetails: (page, size, search, status) => api.get('/dashboard/details', { params: { page, size, search, status } }),
+};
+
 export default api;
