@@ -255,6 +255,8 @@ class CampaignService:
         from_alias: str = None,
         provider: str = "aliyun",
         reply_to_address: str = None,
+        track_opens: bool = True,
+        track_clicks: bool = True,
     ):
         # Fetch contact list count
         contact_list = db.query(ContactList).filter(ContactList.id == list_id).first()
@@ -271,6 +273,8 @@ class CampaignService:
             scheduled_start_time=scheduled_start_time,
             from_alias=from_alias,
             reply_to_address=reply_to_address,  # Save Reply-To
+            track_opens=track_opens,
+            track_clicks=track_clicks,
             total_recipients=total_recipients,  # Fix: Assign total count
             status="pending",
         )

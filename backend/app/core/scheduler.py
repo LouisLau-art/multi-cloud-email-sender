@@ -11,6 +11,7 @@ from datetime import datetime
 import random
 import re
 import uuid
+import urllib.parse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -134,11 +135,25 @@ def send_campaign_batch():
                     or campaign.account_name.split("@")[0]
                 )
 
-                # 追踪像素 URL (假设运行在本地或内网 IP)
-                # TODO: 应该从配置中读取 Base URL
-                track_base_url = "http://192.168.2.8:8000"
+                # 追踪像素 URL (从配置读取)
+                track_base_url = setting.track_domain or "http://192.168.2.8:8000"
+                # 移除末尾斜杠
+                if track_base_url.endswith("/"):
+                    track_base_url = track_base_url[:-1]
+
                 pixel_url = f"{track_base_url}/api/track/open/{tracking_id}"
                 pixel_html = f'<img src="{pixel_url}" width="1" height="1" style="display:none" />'
+
+                # 链接追踪替换函数
+                def replace_link(match):
+                    original_url = match.group(1)
+                    quote = match.group(0)[5]  # ' or "
+                    # 避免替换已经是追踪链接的URL
+                    if "/api/track" in original_url:
+                        return match.group(0)
+                    encoded_url = urllib.parse.quote(original_url)
+                    tracking_url = f"{track_base_url}/api/track/click/{tracking_id}?target={encoded_url}"
+                    return f"href={quote}{tracking_url}{quote}"
 
                 try:
                     if campaign.provider == "tencent":
@@ -171,11 +186,33 @@ def send_campaign_batch():
                             # 清理未匹配的变量 (只清理看起来像变量的，避免破坏 CSS/JS)
                             body = re.sub(r"\{([\w\s]+)\}", r"\1", body)
 
-                            # 注入像素
-                            if "</body>" in body:
-                                body = body.replace("</body>", f"{pixel_html}</body>")
-                            else:
-                                body += pixel_html
+                            # 1. 注入像素
+                            if campaign.track_opens:
+                                if "</body>" in body:
+                                    body = body.replace(
+                                        "</body>", f"{pixel_html}</body>"
+                                    )
+                                    logger.info(
+                                        f"Injecting pixel for {clean_to_address}: Success (</body> found)"
+                                    )
+                                else:
+                                    body += pixel_html
+                                    logger.info(
+                                        f"Injecting pixel for {clean_to_address}: Appended to end"
+                                    )
+
+                            # 2. 替换点击链接
+                            if campaign.track_clicks:
+                                original_body_len = len(body)
+                                body = re.sub(
+                                    r'href\s*=\s*(["\'])(http[^"\']+)\1',
+                                    replace_link,
+                                    body,
+                                )
+                                if len(body) != original_body_len:
+                                    logger.info(
+                                        f"Link tracking injected for {clean_to_address}"
+                                    )
 
                             TencentService.send_mail(
                                 setting.tencent_secret_id,
@@ -197,11 +234,26 @@ def send_campaign_batch():
                         # 清理未匹配的变量 (只清理看起来像变量的，避免破坏 CSS/JS)
                         body = re.sub(r"\{([\w\s]+)\}", r"\1", body)
 
-                        # 注入像素
-                        if "</body>" in body:
-                            body = body.replace("</body>", f"{pixel_html}</body>")
-                        else:
-                            body += pixel_html
+                        # 1. 注入像素
+                        if campaign.track_opens:
+                            if "</body>" in body:
+                                body = body.replace("</body>", f"{pixel_html}</body>")
+                                logger.info(
+                                    f"Injecting pixel for {clean_to_address} (Aliyun)"
+                                )
+                            else:
+                                body += pixel_html
+
+                        # 2. 替换点击链接
+                        if campaign.track_clicks:
+                            original_body_len = len(body)
+                            body = re.sub(
+                                r'href\s*=\s*(["\'])(http[^"\']+)\1', replace_link, body
+                            )
+                            if len(body) != original_body_len:
+                                logger.info(
+                                    f"Link tracking injected for {clean_to_address} (Aliyun)"
+                                )
 
                         # 阿里云: 如果 campaign.reply_to_address 有值，则认为开启回信地址功能 (True)
                         use_reply_to = True if campaign.reply_to_address else False

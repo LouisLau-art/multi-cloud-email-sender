@@ -16,6 +16,11 @@ class Setting(Base):
     tencent_secret_key = Column(String)
     tencent_region = Column(String, default="ap-hongkong")
 
+    # Tracking
+    track_domain = Column(
+        String, default="http://192.168.2.8:8000"
+    )  # Base URL for pixel/links
+
     from_alias = Column(String)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -80,6 +85,10 @@ class Campaign(Base):
     # Task-specific override
     from_alias = Column(String, nullable=True)
     reply_to_address = Column(String, nullable=True)
+
+    # Tracking Options
+    track_opens = Column(Boolean, default=True)
+    track_clicks = Column(Boolean, default=True)
 
     status = Column(
         String, default="pending"

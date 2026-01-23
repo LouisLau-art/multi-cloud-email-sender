@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal, Tabs, Divider, Space, Radio, Empty } from 'antd';
+import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal, Tabs, Divider, Space, Radio, Empty, Switch } from 'antd';
 import { UploadOutlined, UserOutlined, MailOutlined, SettingOutlined, RocketOutlined, EditOutlined, DeleteOutlined, PlusOutlined, PieChartOutlined, CheckCircleOutlined, SyncOutlined, CloseCircleOutlined, EyeOutlined, DownloadOutlined } from '@ant-design/icons';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
-// import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, Legend, ResponsiveContainer } from 'recharts';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import api, { contactApi, settingsApi, dashboardApi } from './services/api';
 import dayjs from 'dayjs';
 
@@ -134,9 +134,18 @@ const Dashboard = () => {
                     <Radio.Button value={30}>30天</Radio.Button>
                 </Radio.Group>
             }>
-                <div style={{ height: 300, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f9f9f9' }}>
-                    {/* Recharts Temporarily Disabled */}
-                    <div>图表区域 (Recharts 已禁用以排查问题)</div>
+                <div style={{ height: 300 }}>
+                    <ResponsiveContainer width="100%" height="100%">
+                        <LineChart data={chartData}>
+                            <CartesianGrid strokeDasharray="3 3" />
+                            <XAxis dataKey="time" />
+                            <YAxis />
+                            <ChartTooltip />
+                            <Legend />
+                            <Line type="monotone" dataKey="opened" name="打开人数" stroke="#1890ff" activeDot={{ r: 8 }} />
+                            <Line type="monotone" dataKey="clicked" name="点击人数" stroke="#722ed1" />
+                        </LineChart>
+                    </ResponsiveContainer>
                 </div>
             </Card>
 
@@ -211,7 +220,8 @@ const Settings = () => {
           <Form.Item name="tencent_region" label="腾讯云区域" initialValue="ap-hongkong"><Input placeholder="ap-hongkong" /></Form.Item>
           
           <hr style={{ border: '0.5px solid #eee', margin: '20px 0' }} />
-          
+
+          <Form.Item name="track_domain" label="追踪域名/IP 配置" tooltip="用于生成邮件中的开信和点击追踪链接。格式如：http://192.168.2.8:8000 或 https://your-domain.com。请确保收件人能访问此地址。"><Input placeholder="http://192.168.2.8:8000" /></Form.Item>
           <Form.Item name="from_alias" label="全局默认发件人昵称" tooltip="当模板未设置时使用"><Input /></Form.Item>
           <Button type="primary" htmlType="submit">保存所有配置</Button>
         </Form>
@@ -641,6 +651,19 @@ const Campaigns = () => {
             </Col>
             <Col span={6}>
               <Form.Item name="scheduled_start_time" label="计划开始时间"><DatePicker showTime placeholder="立即开始" style={{width: '100%'}} /></Form.Item>
+            </Col>
+          </Row>
+
+          <Row gutter={16}>
+            <Col span={6}>
+                <Form.Item name="track_opens" valuePropName="checked" initialValue={true} label="追踪开信" tooltip="插入像素点统计打开率。若遇到'身份验证'警告，请尝试关闭此项。">
+                    <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                </Form.Item>
+            </Col>
+            <Col span={6}>
+                <Form.Item name="track_clicks" valuePropName="checked" initialValue={true} label="追踪点击" tooltip="自动替换链接以统计点击率。">
+                    <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                </Form.Item>
             </Col>
           </Row>
           

@@ -51,7 +51,9 @@ class CampaignCreate(BaseModel):
     interval_minutes: int = 15
     scheduled_start_time: Optional[datetime] = None
     from_alias: Optional[str] = None
-    reply_to_address: Optional[str] = None  # New Field
+    reply_to_address: Optional[str] = None
+    track_opens: bool = True
+    track_clicks: bool = True
 
 
 class SavedReplyToCreate(BaseModel):
@@ -440,6 +442,8 @@ def create_campaign(campaign: CampaignCreate, db: Session = Depends(get_db)):
         campaign.from_alias,
         campaign.provider,
         campaign.reply_to_address,
+        campaign.track_opens,
+        campaign.track_clicks,
     )
 
 
