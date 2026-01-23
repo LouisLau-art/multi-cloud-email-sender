@@ -1,46 +1,79 @@
-# AI Handoff: Multi-Cloud Email Sender Project State
+# AI Handoff Context: Email Marketing System
 
-## 🤖 Context Overview
-This project is a high-availability email marketing system for non-technical users, supporting **Aliyun DirectMail** and **Tencent Cloud SES**. 
+**Target Audience:** Future AI Agents operating on this repository.
+**Date:** 2026-01-22
+**Status:** Functional Prototype with Advanced Features (Dashboard, Tracking).
 
-### Stack
-- **Backend**: FastAPI, SQLAlchemy (SQLite), APScheduler (In-process task queue).
-- **Frontend**: React (Vite, Ant Design).
-- **Persistence**: SQLite (Local file `email_app.db` locked to `os.getcwd()` for EXE stability).
-- **Deployment**: Single-folder EXE (PyInstaller), Source (start.sh/bat).
+## 1. Project Overview
+- **Type:** Full-stack Email Marketing Application (Single-file EXE capable).
+- **Stack:** 
+  - **Backend:** Python (FastAPI, SQLAlchemy, APScheduler, Alibabacloud SDK, Tencentcloud SDK).
+  - **Frontend:** React 18 (Vite, Ant Design 5, Recharts 2). **Note:** React was explicitly downgraded from 19 to 18.2.0 to ensure Recharts compatibility.
+  - **DB:** SQLite (`backend/email_app.db`).
+- **Core Function:** Send bulk emails via Aliyun DirectMail and Tencent Cloud SES.
 
-## 🛠️ Accomplished Today (2026-01-22)
+## 2. Recent Accomplishments
+### 2.1. Data Dashboard & Tracking (The "Self-Hosted" Solution)
+- **Architecture:** 
+  - `CampaignRecipient` table tracks granular status (`sent`, `opened`, `clicked`) per email.
+  - **Open Tracking:** Injects a 1x1 pixel (`<img src="{base_url}/api/track/open/{uuid}" />`) into the email body.
+  - **Click Tracking:** Regex replaces `href="http..."` with `{base_url}/api/track/click/{uuid}?target=...`.
+  - **Endpoints:** `backend/app/api/tracking.py` handles the requests.
+  - **Scheduler:** `backend/app/core/scheduler.py` handles the injection logic during sending.
+- **UI:** 
+  - `Dashboard.jsx` visualizes this data with Recharts (LineChart) and Stats Cards.
+  - **Export:** Supports streaming CSV export of recipient details.
 
-### 1. Tencent Cloud SES Integration (Advanced)
-- **Template Mode**: Implemented Template-based sending to bypass Tencent's "Custom HTML Permission" restriction.
-- **Data Mapping**: Local `vars_map` (from CSV) is serialized to JSON and passed as `TemplateData` (not `TemplateParam`).
-- **Base64 Handling**: Added server-side auto-decoding for Tencent template content (HTML/Text) to ensure human-readable editing in the UI.
-- **Sync Logic**: Resolved API field mismatch (Tencent returns `TemplatesMetadata` instead of `Templates`).
-- **Identity Patching**: Auto-prepends `notification@` prefix if only a domain is provided as the sender address.
+### 2.2. Tracking Switches (Warning Mitigation)
+- **Problem:** Self-hosted tracking links (especially HTTP IPs like `192.168.x.x`) trigger "Identity Verification" warnings in mail clients (e.g., QQ Mail).
+- **Solution:** Added `track_opens` and `track_clicks` booleans to the `Campaign` model.
+- **UI:** Switches added to the Campaign Creation form. Turning them OFF disables injection, removing the warning but sacrificing data.
 
-### 2. Scheduler & Core Engine
-- **Bug Fix**: Resolved `sent_count` double-incrementing bug.
-- **Variable Injection**: Enhanced `subject` line processing to support local replacement of `{var}` and `{{var}}` even in cloud template mode.
-- **Persistence**: Added `localStorage` draft saving in `Campaigns.jsx` to prevent data loss on route changes.
-- **Syntax/Indentation**: Fixed multi-line SQLAlchemy query `IndentationError` by wrapping calls in parentheses.
+### 2.3. Reply-To Management
+- Implemented `SavedReplyTo` model and UI.
+- **Aliyun:** Supports "Reply-To" via console configuration (boolean flag in API).
+- **Tencent:** Supports dynamic "Reply-To" addresses via API.
 
-### 3. DevOps & Tooling
-- **Triple-Remote Sync**: Automated pushing to GitHub, Gitee, and Internal Gitea (`192.168.2.8`).
-- **CLI**: Installed and configured `tea` (Gitea CLI) on the host.
+## 3. Current Critical Context & Limitations
+### 3.1. The "Intranet" Constraint
+- The system runs on a user's local machine or intranet server (`192.168.x.x`).
+- **Consequence:** We cannot use standard **Webhooks** from Aliyun/Tencent for tracking because they cannot reach the local machine.
+- **Current Workaround:** We use the "Self-Hosted" tracking described in 2.1.
+- **Current Issue:** The self-hosted links trigger security warnings because the domain (IP) doesn't match the sender domain.
 
-## 📂 Current Data State
-- **Test CSV**: `docs/test_recipients.csv` (Contains 8 recipients with variables for both Text and HTML templates).
-- **HTML Sample**: `docs/tencent_template.html` (Strictly follows Tencent SES variable and word-count guidelines).
+### 3.2. Codebase Specifics
+- **React Version:** STRICTLY keep React at `^18.2.0`. Do not upgrade to 19+ as it breaks `recharts` and `react-router-dom` interactions.
+- **Icons:** Some Ant Design icons (like `ClickThroughOutlined`) were hallucinated in previous turns. Use standard icons (`PointerOutlined`).
+- **Tencent Template Mode:** If using a synced Tencent template (with `provider_id`), we **cannot** inject tracking pixels because the HTML is rendered cloud-side. Injection only works for Local Templates or Aliyun.
 
-## ⚠️ Known Issues & Technical Debt
-- **Tencent Approval**: Sub-domain `qq.louisliu.fun` currently fails with `NotAuthenticatedSender` because it's pending Tencent manual review. Use `louisliu.fun` (root) for testing.
-- **Concurrency**: SQLite WAL mode is not explicitly enabled; heavy concurrent uploads + scheduler runs might cause transient `Database Locked` errors.
-- **UI State**: Form persistence is via `localStorage`. For production, a global state (Zustand/Redux) or server-side drafts would be more robust.
+## 4. Next Tasks (The Roadmap)
 
-## 🔜 Next Actions for Successor
-1. **Attachment Feature**: Boss requested attachment support (needs `SendRawEmail` implementation for Tencent/Aliyun).
-2. **Analytics**: Implement open-tracking pixel (requires an accessible public endpoint).
-3. **Template Validation**: Add a "Preview" mode in the UI that performs local variable substitution before sending.
+### Priority 1: Implement "Invisible Tracking" via Aliyun MNS
+**Goal:** Get granular tracking data ("Who opened it") **without** modifying the email body (avoiding warnings).
+**Concept:** Instead of self-hosted pixels, enable Aliyun's native tracking and pull logs from **Aliyun MNS (Message Service)**.
 
----
-**Louis Shawn AI Handoff v1.0**
+**Steps for Next AI:**
+1.  **Research:** Confirm Aliyun DirectMail supports pushing "Open" and "Click" events to MNS.
+2.  **Backend:** 
+    - Add `mns-python-sdk` (or use `alibabacloud_mns` if available).
+    - Create a background task (APScheduler) to **poll** the MNS queue periodically.
+    - Parse the JSON messages from MNS.
+    - Update `CampaignRecipient` status based on the message content (match by Email Address and Time, or Tag if possible).
+3.  **UI:** Add MNS configuration fields to `Settings` (Queue Name, Endpoint).
+
+### Priority 2: Improve Click Tracking Regex
+- The current regex in `scheduler.py` is basic: `r'href\s*=\s*(["\'])(http[^"\']+)\1'`.
+- **Risk:** It might break complex HTML or miss links with attributes between `href` and the URL.
+- **Task:** Consider using `BeautifulSoup` for safer HTML manipulation if the user reports broken layouts.
+
+### Priority 3: Tencent Cloud Pull-Tracking
+- Investigate if Tencent SES has a similar "Message Queue" or "Log Pull" API for tracking events without Webhooks.
+
+## 5. File Manifest
+- `backend/app/core/scheduler.py`: **CRITICAL**. Handles sending logic and tracking injection.
+- `backend/app/api/tracking.py`: Handles the pixel/redirect requests.
+- `backend/app/api/dashboard.py`: Aggregates stats for the frontend.
+- `frontend/src/App.jsx`: Main UI, includes Dashboard and Campaign creation.
+- `backend/app/models/models.py`: Database schema.
+
+**Good luck.** Focus on the MNS integration to solve the user's "Warning vs. Data" dilemma.
