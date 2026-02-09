@@ -33,21 +33,56 @@ const Dashboard = () => {
         loadDetails(1, 10, searchText, detailFilter);
     }, [detailFilter]); // Search triggers manually
 
+    const showBackendConnectionError = (error) => {
+        console.error('Dashboard API request failed:', error);
+        message.error({
+            key: 'dashboard-connection-error',
+            content: '无法连接后端服务（http://localhost:8000）。请先启动后端。',
+            duration: 3,
+        });
+    };
+
     const loadStats = () => {
-        dashboardApi.getStats().then(res => setStats(res.data));
+        dashboardApi.getStats()
+            .then(res => setStats(res.data))
+            .catch((error) => {
+                setStats({
+                    total_recipients: 0,
+                    sent_count: 0,
+                    delivery_rate: 0,
+                    delivered_count: 0,
+                    opened_count: 0,
+                    open_rate: 0,
+                    clicked_count: 0,
+                    click_rate: 0,
+                });
+                showBackendConnectionError(error);
+            });
     };
 
     const loadChart = () => {
-        dashboardApi.getChartData(chartRange).then(res => setChartData(res.data));
+        dashboardApi.getChartData(chartRange)
+            .then(res => setChartData(res.data))
+            .catch((error) => {
+                setChartData([]);
+                showBackendConnectionError(error);
+            });
     };
 
     const loadDetails = (page, size, search, status) => {
         setLoading(true);
         const statusParam = status === 'all' ? null : status;
-        dashboardApi.getDetails(page, size, search, statusParam).then(res => {
-            setDetails(res.data);
-            setLoading(false);
-        });
+        dashboardApi.getDetails(page, size, search, statusParam)
+            .then(res => {
+                setDetails(res.data);
+            })
+            .catch((error) => {
+                setDetails({ items: [], total: 0, page, size });
+                showBackendConnectionError(error);
+            })
+            .finally(() => {
+                setLoading(false);
+            });
     };
 
     const handleSearch = (value) => {
