@@ -46,6 +46,11 @@
 - **Icons:** Some Ant Design icons (like `ClickThroughOutlined`) were hallucinated in previous turns. Use standard icons (`PointerOutlined`).
 - **Tencent Template Mode:** If using a synced Tencent template (with `provider_id`), we **cannot** inject tracking pixels because the HTML is rendered cloud-side. Injection only works for Local Templates or Aliyun.
 
+### 3.3. Agent Context File Synchronization (Mandatory)
+- `AGENTS.md` and `GEMINI.md` are paired context files and must remain semantically synchronized.
+- Any change applied to one of these files must be mirrored in the other file in the same task/commit.
+- Before finalizing work, agents should verify both files are aligned.
+
 ## 4. Next Tasks (The Roadmap)
 
 ### Priority 1: Implement "Invisible Tracking" via Aliyun MNS
