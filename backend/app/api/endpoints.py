@@ -24,6 +24,7 @@ class SettingUpdate(BaseModel):
     tencent_secret_id: Optional[str] = None
     tencent_secret_key: Optional[str] = None
     tencent_region: str = "ap-hongkong"
+    track_domain: Optional[str] = None
     from_alias: Optional[str] = None
 
 
@@ -102,6 +103,8 @@ def update_settings(setting: SettingUpdate, db: Session = Depends(get_db)):
         existing.tencent_secret_key = setting.tencent_secret_key
     if setting.tencent_region is not None:
         existing.tencent_region = setting.tencent_region
+    if setting.track_domain is not None:
+        existing.track_domain = setting.track_domain
     if setting.from_alias is not None:
         existing.from_alias = setting.from_alias
 

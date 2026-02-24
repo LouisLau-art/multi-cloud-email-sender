@@ -1,5 +1,6 @@
 from apscheduler.schedulers.background import BackgroundScheduler
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from .database import SessionLocal
 from ..models import models
 from ..services.aliyun_service import AliyunService
@@ -163,7 +164,7 @@ def send_campaign_batch():
                             # 但大多数时候模板不支持，所以模板模式的追踪比较困难，除非模板里预留了位置
                             # 这里暂时跳过模板模式的像素注入，或者仅仅依赖 send_mail 成功
 
-                            TencentService.send_mail(
+                            tencent_response = TencentService.send_mail(
                                 setting.tencent_secret_id,
                                 setting.tencent_secret_key,
                                 setting.tencent_region,
@@ -176,6 +177,12 @@ def send_campaign_batch():
                                 template_params=json.dumps(vars_map),
                                 reply_to_address=campaign.reply_to_address,
                             )
+                            # Save MessageId for Pull Tracking
+                            if tencent_response and hasattr(
+                                tencent_response, "MessageId"
+                            ):
+                                recipient.message_id = tencent_response.MessageId
+                                recipient.provider = "tencent"
                         else:
                             # 腾讯云 HTML 模式
                             body = template.body
@@ -214,7 +221,7 @@ def send_campaign_batch():
                                         f"Link tracking injected for {clean_to_address}"
                                     )
 
-                            TencentService.send_mail(
+                            tencent_response = TencentService.send_mail(
                                 setting.tencent_secret_id,
                                 setting.tencent_secret_key,
                                 setting.tencent_region,
@@ -225,6 +232,12 @@ def send_campaign_batch():
                                 from_alias=real_from_alias,
                                 reply_to_address=campaign.reply_to_address,
                             )
+                            # Save MessageId for Pull Tracking
+                            if tencent_response and hasattr(
+                                tencent_response, "MessageId"
+                            ):
+                                recipient.message_id = tencent_response.MessageId
+                                recipient.provider = "tencent"
                     elif campaign.provider == "aliyun":
                         body = template.body
                         for key, val in vars_map.items():
@@ -300,7 +313,172 @@ def send_campaign_batch():
         db.close()
 
 
+def pull_email_tracking_status():
+    """
+    后台任务：从腾讯云拉取邮件追踪状态 (打开/点击)
+    每 5 分钟运行一次，查询最近 7 天内有 message_id 的收件人记录
+    """
+    db = get_db_session()
+    try:
+        setting = db.query(models.Setting).first()
+        if (
+            not setting
+            or not setting.tencent_secret_id
+            or not setting.tencent_secret_key
+        ):
+            return  # 没有配置腾讯云，跳过
+
+        # 查询最近 7 天内待同步的腾讯云收件人
+        from datetime import timedelta
+
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
+        unresolved_filters = (
+            models.CampaignRecipient.provider == "tencent",
+            models.CampaignRecipient.message_id.isnot(None),
+            models.CampaignRecipient.sent_at >= seven_days_ago,
+            # 仍需要追踪更新的记录：sent/opened（clicked 视为终态）
+            models.CampaignRecipient.status.in_(["sent", "opened"]),
+        )
+
+        pending_count = (
+            db.query(models.CampaignRecipient)
+            .filter(*unresolved_filters)
+            .count()
+        )
+        if pending_count == 0:
+            return
+
+        logger.info(f"[Pull Tracking] Pending Tencent recipients: {pending_count}")
+
+        # 仅拉取存在未完成追踪记录的日期，减少无效 API 查询
+        pending_dates = (
+            db.query(func.date(models.CampaignRecipient.sent_at))
+            .filter(*unresolved_filters)
+            .distinct()
+            .all()
+        )
+
+        total_updated = 0
+        per_page_limit = 100
+        max_pages_per_date = 50
+
+        for (date_str,) in pending_dates:
+            if not date_str:
+                continue
+            try:
+                date_recipients = (
+                    db.query(models.CampaignRecipient)
+                    .filter(*unresolved_filters, func.date(models.CampaignRecipient.sent_at) == date_str)
+                    .all()
+                )
+                if not date_recipients:
+                    continue
+
+                # MessageId -> recipient
+                date_recipient_map = {
+                    r.message_id: r for r in date_recipients if r.message_id
+                }
+                if not date_recipient_map:
+                    continue
+
+                logger.info(
+                    f"[Pull Tracking] Syncing date={date_str}, unresolved={len(date_recipient_map)}"
+                )
+
+                offset = 0
+                pages = 0
+                date_updated = 0
+
+                while pages < max_pages_per_date:
+                    response = TencentService.get_send_email_status(
+                        setting.tencent_secret_id,
+                        setting.tencent_secret_key,
+                        setting.tencent_region or "ap-hongkong",
+                        date_str,
+                        offset=offset,
+                        limit=per_page_limit,
+                    )
+
+                    status_list = (
+                        list(response.EmailStatusList)
+                        if response and response.EmailStatusList
+                        else []
+                    )
+                    if not status_list:
+                        break
+
+                    page_updated = 0
+                    for cloud_status in status_list:
+                        message_id = getattr(cloud_status, "MessageId", None)
+                        if not message_id:
+                            continue
+                        recipient = date_recipient_map.get(message_id)
+                        if not recipient:
+                            continue
+
+                        updated = False
+                        now = datetime.utcnow()
+                        user_opened = bool(getattr(cloud_status, "UserOpened", False))
+                        user_clicked = bool(getattr(cloud_status, "UserClicked", False))
+
+                        # 打开：只记录首个打开时间
+                        if user_opened and not recipient.opened_at:
+                            recipient.opened_at = now
+                            updated = True
+                            if recipient.status == "sent":
+                                recipient.status = "opened"
+
+                        # 点击：点击优先级高于打开
+                        if user_clicked:
+                            if not recipient.clicked_at:
+                                recipient.clicked_at = now
+                                updated = True
+                            if not recipient.opened_at:
+                                recipient.opened_at = now
+                                updated = True
+                            if recipient.status != "clicked":
+                                recipient.status = "clicked"
+                                updated = True
+                            # clicked 视为终态，避免后续重复检查
+                            date_recipient_map.pop(message_id, None)
+
+                        if updated:
+                            page_updated += 1
+
+                    if page_updated:
+                        db.commit()
+                        date_updated += page_updated
+
+                    if len(status_list) < per_page_limit:
+                        break
+
+                    offset += per_page_limit
+                    pages += 1
+
+                if date_updated:
+                    logger.info(
+                        f"[Pull Tracking] date={date_str} updated={date_updated}"
+                    )
+                    total_updated += date_updated
+
+            except Exception as e:
+                logger.error(
+                    f"[Pull Tracking] Error fetching status for {date_str}: {e}"
+                )
+                continue
+
+        if total_updated:
+            logger.info(f"[Pull Tracking] Total updated recipients: {total_updated}")
+
+    except Exception as e:
+        logger.error(f"[Pull Tracking] Error: {e}")
+    finally:
+        db.close()
+
+
 def start_scheduler():
     if not scheduler.running:
         scheduler.add_job(send_campaign_batch, "interval", minutes=1)
+        # 添加 Pull Tracking 任务，每 5 分钟运行一次
+        scheduler.add_job(pull_email_tracking_status, "interval", minutes=5)
         scheduler.start()

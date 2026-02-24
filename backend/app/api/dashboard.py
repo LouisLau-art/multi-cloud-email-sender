@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from datetime import datetime, timedelta
 from ..core.database import get_db
 from ..models import models
@@ -33,12 +33,14 @@ class ChartDataPoint(BaseModel):
 @router.get("/dashboard/stats", response_model=DashboardStats)
 def get_dashboard_stats(db: Session = Depends(get_db)):
     total = db.query(models.CampaignRecipient).count()
-    sent = (
+    success_statuses = ["sent", "opened", "clicked", "unsubscribed"]
+    delivered = (
         db.query(models.CampaignRecipient)
-        .filter(models.CampaignRecipient.status == "sent")
+        .filter(models.CampaignRecipient.status.in_(success_statuses))
         .count()
     )
-    # Assuming 'sent' means delivered for now
+    # Sent count in the dashboard is defined as successfully sent recipients.
+    sent = delivered
     opened = (
         db.query(models.CampaignRecipient)
         .filter(models.CampaignRecipient.opened_at.isnot(None))
@@ -49,8 +51,6 @@ def get_dashboard_stats(db: Session = Depends(get_db)):
         .filter(models.CampaignRecipient.clicked_at.isnot(None))
         .count()
     )
-
-    delivered = sent
 
     # Avoid DivisionByZero
     delivery_rate = round((delivered / total * 100), 2) if total > 0 else 0
@@ -75,7 +75,12 @@ def get_chart_data(days: int = 2, db: Session = Depends(get_db)):
 
     events = (
         db.query(models.CampaignRecipient)
-        .filter(models.CampaignRecipient.sent_at >= start_date)
+        .filter(
+            or_(
+                models.CampaignRecipient.opened_at >= start_date,
+                models.CampaignRecipient.clicked_at >= start_date,
+            )
+        )
         .all()
     )
 
@@ -86,14 +91,14 @@ def get_chart_data(days: int = 2, db: Session = Depends(get_db)):
     # Let's return existing data points sorted.
 
     for r in events:
-        if r.opened_at:
+        if r.opened_at and r.opened_at >= start_date:
             # Group by Hour: 2026-01-22 10:00
             key = r.opened_at.strftime("%Y-%m-%d %H:00")
             if key not in data_map:
                 data_map[key] = {"opened": 0, "clicked": 0}
             data_map[key]["opened"] += 1
 
-        if r.clicked_at:
+        if r.clicked_at and r.clicked_at >= start_date:
             key = r.clicked_at.strftime("%Y-%m-%d %H:00")
             if key not in data_map:
                 data_map[key] = {"opened": 0, "clicked": 0}

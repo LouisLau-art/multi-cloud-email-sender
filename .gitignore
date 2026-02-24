@@ -7,3 +7,4 @@ backend/email_app.db
 dist/
 .DS_Store
 .env
+logs/

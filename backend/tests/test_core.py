@@ -8,6 +8,7 @@ from app.models.models import Base
 import app.models.models as models_module 
 import io
 import datetime
+import uuid
 
 # Setup in-memory DB for testing
 SQLALCHEMY_DATABASE_URL = "sqlite:///:memory:"
@@ -41,6 +42,7 @@ def test_settings_update_multicloud():
         "access_key_secret": "ali_secret",
         "region_id": "cn-hangzhou",
         "tencent_secret_id": "tx_id",
+        "track_domain": "https://track.example.com",
         "from_alias": "Test Sender"
     })
     assert response.status_code == 200
@@ -49,6 +51,62 @@ def test_settings_update_multicloud():
     data = response.json()
     assert data["access_key_id"] == "ali_id"
     assert data["tencent_secret_id"] == "tx_id"
+    assert data["track_domain"] == "https://track.example.com"
+
+
+def test_dashboard_stats_with_opened_and_clicked_statuses():
+    """统计口径：sent/opened/clicked 都计入 sent_count 与 delivered_count"""
+    db = TestingSessionLocal()
+    try:
+        db.query(models_module.CampaignRecipient).delete()
+        db.commit()
+
+        now = datetime.datetime.utcnow()
+        rows = [
+            models_module.CampaignRecipient(
+                email="sent@test.com",
+                tracking_id=str(uuid.uuid4()),
+                status="sent",
+                sent_at=now,
+            ),
+            models_module.CampaignRecipient(
+                email="opened@test.com",
+                tracking_id=str(uuid.uuid4()),
+                status="opened",
+                sent_at=now,
+                opened_at=now,
+            ),
+            models_module.CampaignRecipient(
+                email="clicked@test.com",
+                tracking_id=str(uuid.uuid4()),
+                status="clicked",
+                sent_at=now,
+                opened_at=now,
+                clicked_at=now,
+            ),
+            models_module.CampaignRecipient(
+                email="failed@test.com",
+                tracking_id=str(uuid.uuid4()),
+                status="failed",
+                sent_at=now,
+            ),
+        ]
+        db.add_all(rows)
+        db.commit()
+    finally:
+        db.close()
+
+    response = client.get("/api/dashboard/stats")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["total_recipients"] == 4
+    assert data["sent_count"] == 3
+    assert data["delivered_count"] == 3
+    assert data["opened_count"] == 2
+    assert data["clicked_count"] == 1
+    assert data["delivery_rate"] == 75.0
+    assert data["open_rate"] == 66.67
+    assert data["click_rate"] == 33.33
 
 def test_csv_parsing_tab_delimiter():
     """测试 CSV 解析的暴力 Tab 拆分功能"""
