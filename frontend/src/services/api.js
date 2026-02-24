@@ -21,9 +21,8 @@ export const campaignApi = {
     getAll: () => api.get('/campaigns'),
     create: (data) => api.post('/campaigns', data),
     get: (id) => api.get(`/campaigns/${id}`),
-    pause: (id) => api.post(`/campaigns/${id}/pause`),
-    resume: (id) => api.post(`/campaigns/${id}/resume`),
-    logs: (id) => api.get(`/campaigns/${id}/logs`),
+    pause: (id) => api.post(`/campaigns/${id}/stop`),
+    resume: (id) => api.post(`/campaigns/${id}/start`),
 };
 
 export const contactApi = {
@@ -51,7 +50,7 @@ export const templateApi = {
 
 export const settingsApi = {
     get: () => api.get('/settings'),
-    update: (data) => api.put('/settings', data),
+    update: (data) => api.post('/settings', data),
     testAliyun: () => api.post('/settings/test/aliyun'),
     testTencent: () => api.post('/settings/test/tencent'),
     getReplyTos: () => api.get('/settings/reply_tos'),

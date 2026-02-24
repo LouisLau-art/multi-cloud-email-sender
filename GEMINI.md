@@ -20,8 +20,8 @@ This repository contains a full-stack email marketing application designed for h
 - **Install Dependencies:** `npm install` (within `frontend/` directory)
 - **Start Development Server:** `npm run dev`
 - **Build for Production:** `npm run build`
-- **Run All Tests:** `npm run test` (uses Vitest)
-- **Run Single Test:** `npx vitest run src/App.test.jsx`
+- **Run All Tests:** Not configured in `frontend/package.json` (no `test` script currently)
+- **Run Single Test:** Not configured by default (add Vitest first if needed)
 - **Linting:** `npm run lint` (uses ESLint)
 
 ### Packaging (PyInstaller)
@@ -41,11 +41,11 @@ This repository contains a full-stack email marketing application designed for h
 - **Service Layer:** Cloud providers (Aliyun/Tencent) are isolated in `backend/app/services/`.
 
 ### Frontend (React)
-- **Stack:** React 19, Vite, Ant Design, Axios.
+- **Stack:** React 18, Vite, Ant Design, Axios.
 - **State:** 
   - Local state (`useState`) is preferred.
   - **Drafts:** Complex forms (like Campaign creation) use `localStorage` to prevent data loss on navigation.
-- **Routing:** React Router 7.
+- **Routing:** React Router 6.
 - **UI/UX:** Ant Design components. Visual consistency is key.
 
 ---
