@@ -280,4 +280,5 @@ class CampaignService:
         )
         db.add(campaign)
         db.commit()
+        db.refresh(campaign)  # Ensure id is loaded
         return campaign

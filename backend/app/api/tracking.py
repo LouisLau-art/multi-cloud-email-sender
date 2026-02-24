@@ -1,9 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, Request
+from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
 from ..core.database import get_db
 from ..models import models
 import base64
+from urllib.parse import urlparse
 
 router = APIRouter()
 
@@ -46,6 +48,21 @@ def track_click(tracking_id: str, target: str, db: Session = Depends(get_db)):
     Link tracking endpoint.
     Records the click event and redirects to the target URL.
     """
+    parsed = urlparse(target)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(status_code=400, detail="Invalid redirect target")
+
+    allowed = (
+        db.query(models.CampaignRecipientLink)
+        .filter(
+            models.CampaignRecipientLink.tracking_id == tracking_id,
+            models.CampaignRecipientLink.target_url == target,
+        )
+        .first()
+    )
+    if not allowed:
+        raise HTTPException(status_code=404, detail="Tracking target not found")
+
     recipient = (
         db.query(models.CampaignRecipient)
         .filter(models.CampaignRecipient.tracking_id == tracking_id)
@@ -62,4 +79,4 @@ def track_click(tracking_id: str, target: str, db: Session = Depends(get_db)):
             recipient.status = "clicked"
             db.commit()
 
-    return Response(status_code=302, headers={"Location": target})
+    return RedirectResponse(url=target, status_code=302)

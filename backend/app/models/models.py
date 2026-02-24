@@ -1,4 +1,13 @@
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, Boolean
+from sqlalchemy import (
+    Column,
+    Integer,
+    String,
+    Text,
+    DateTime,
+    ForeignKey,
+    Boolean,
+    UniqueConstraint,
+)
 from sqlalchemy.orm import relationship
 from datetime import datetime
 from ..core.database import Base
@@ -140,7 +149,32 @@ class CampaignRecipient(Base):
     # Unique ID for tracking pixel/links (e.g. UUID)
     tracking_id = Column(String, unique=True, index=True)
 
+    # Cloud provider message ID (for Pull Tracking)
+    message_id = Column(String, nullable=True, index=True)  # e.g. Tencent's MessageId
+    provider = Column(
+        String, nullable=True
+    )  # 'aliyun' or 'tencent' - for tracking lookup
+
     campaign = relationship("Campaign", back_populates="recipients")
+    tracked_links = relationship(
+        "CampaignRecipientLink", back_populates="recipient", cascade="all, delete-orphan"
+    )
+
+
+class CampaignRecipientLink(Base):
+    __tablename__ = "campaign_recipient_links"
+    __table_args__ = (
+        UniqueConstraint(
+            "tracking_id", "target_url", name="uq_campaign_recipient_link_target"
+        ),
+    )
+    id = Column(Integer, primary_key=True, index=True)
+    tracking_id = Column(
+        String, ForeignKey("campaign_recipients.tracking_id"), nullable=False, index=True
+    )
+    target_url = Column(Text, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    recipient = relationship("CampaignRecipient", back_populates="tracked_links")
 
 
 # Update Campaign relationship

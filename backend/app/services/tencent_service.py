@@ -99,3 +99,49 @@ class TencentService:
         req.TemplateID = template_id
         resp = client.GetEmailTemplate(req)
         return resp
+
+    @staticmethod
+    def get_send_email_status(
+        secret_id: str,
+        secret_key: str,
+        region: str,
+        request_date: str,
+        message_id: str = None,
+        to_email_address: str = None,
+        offset: int = 0,
+        limit: int = 100,
+    ):
+        """
+        获取邮件发送状态 (Pull Tracking)
+
+        Args:
+            secret_id: 腾讯云密钥 ID
+            secret_key: 腾讯云密钥
+            region: 区域 (ap-guangzhou 或 ap-hongkong)
+            request_date: 发送日期，格式 yyyy-MM-dd
+            message_id: SendEmail 返回的 MessageId (可选)
+            to_email_address: 收件人邮箱 (可选)
+            offset: 偏移量 (默认 0)
+            limit: 拉取条数 (最大 100)
+
+        Returns:
+            EmailStatusList: 包含 UserOpened, UserClicked 等字段的状态列表
+        """
+        client = TencentService.create_client(secret_id, secret_key, region)
+
+        req = models.GetSendEmailStatusRequest()
+
+        params = {
+            "RequestDate": request_date,
+            "Offset": offset,
+            "Limit": limit,
+        }
+
+        if message_id:
+            params["MessageId"] = message_id
+        if to_email_address:
+            params["ToEmailAddress"] = to_email_address
+
+        req.from_json_string(json.dumps(params))
+
+        return client.GetSendEmailStatus(req)

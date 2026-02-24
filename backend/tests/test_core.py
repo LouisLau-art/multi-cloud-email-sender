@@ -108,6 +108,58 @@ def test_dashboard_stats_with_opened_and_clicked_statuses():
     assert data["open_rate"] == 66.67
     assert data["click_rate"] == 33.33
 
+
+def test_click_tracking_requires_registered_target():
+    """点击追踪只允许跳转到发送时登记过的 URL，防止任意重定向"""
+    tracking_id = str(uuid.uuid4())
+    target = "https://example.com/path?a=1&b=2"
+
+    db = TestingSessionLocal()
+    try:
+        db.query(models_module.CampaignRecipientLink).delete()
+        db.query(models_module.CampaignRecipient).delete()
+        db.commit()
+
+        recipient = models_module.CampaignRecipient(
+            email="click@test.com",
+            tracking_id=tracking_id,
+            status="sent",
+            sent_at=datetime.datetime.utcnow(),
+        )
+        db.add(recipient)
+        db.commit()
+
+        # 未登记目标链接，应拒绝
+        bad = client.get(
+            f"/api/track/click/{tracking_id}",
+            params={"target": target},
+            follow_redirects=False,
+        )
+        assert bad.status_code == 404
+
+        db.add(
+            models_module.CampaignRecipientLink(
+                tracking_id=tracking_id, target_url=target
+            )
+        )
+        db.commit()
+
+        ok = client.get(
+            f"/api/track/click/{tracking_id}",
+            params={"target": target},
+            follow_redirects=False,
+        )
+        assert ok.status_code == 302
+        assert ok.headers.get("location") == target
+
+        db.refresh(recipient)
+        assert recipient.clicked_at is not None
+        assert recipient.opened_at is not None
+        assert recipient.status == "clicked"
+    finally:
+        db.close()
+
+
 def test_csv_parsing_tab_delimiter():
     """测试 CSV 解析的暴力 Tab 拆分功能"""
     # 模拟一个 Excel 导出的 Tab 分隔文件 (UTF-16 常见，但这里简单模拟内容结构)

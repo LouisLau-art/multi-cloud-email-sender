@@ -53,6 +53,21 @@ def send_campaign_batch():
                 .filter(models.EmailTemplate.id == campaign.template_id)
                 .first()
             )
+            if not template:
+                err_msg = f"Template not found: id={campaign.template_id}"
+                logger.error(f"Campaign {campaign.id} failed: {err_msg}")
+                campaign.status = "error"
+                db.add(
+                    models.CampaignBatch(
+                        campaign_id=campaign.id,
+                        status="error",
+                        recipient_count=0,
+                        error_message=err_msg,
+                        sent_at=datetime.utcnow(),
+                    )
+                )
+                db.commit()
+                continue
 
             # 间隔检查
             last_batch = (
@@ -100,6 +115,7 @@ def send_campaign_batch():
 
                 clean_to_address = contact.email.split()[0].strip()
                 tracking_id = str(uuid.uuid4())
+                tracked_links = set()
 
                 # 记录发送日志
                 recipient = models.CampaignRecipient(
@@ -147,13 +163,14 @@ def send_campaign_batch():
 
                 # 链接追踪替换函数
                 def replace_link(match):
-                    original_url = match.group(1)
-                    quote = match.group(0)[5]  # ' or "
+                    quote = match.group(1)
+                    original_url = match.group(2)
                     # 避免替换已经是追踪链接的URL
                     if "/api/track" in original_url:
                         return match.group(0)
-                    encoded_url = urllib.parse.quote(original_url)
+                    encoded_url = urllib.parse.quote(original_url, safe="")
                     tracking_url = f"{track_base_url}/api/track/click/{tracking_id}?target={encoded_url}"
+                    tracked_links.add(original_url)
                     return f"href={quote}{tracking_url}{quote}"
 
                 try:
@@ -286,6 +303,23 @@ def send_campaign_batch():
                     # 更新状态为 sent
                     recipient.status = "sent"
                     recipient.sent_at = datetime.utcnow()
+
+                    if campaign.track_clicks and tracked_links:
+                        existing_urls = {
+                            row[0]
+                            for row in db.query(models.CampaignRecipientLink.target_url)
+                            .filter(
+                                models.CampaignRecipientLink.tracking_id == tracking_id
+                            )
+                            .all()
+                        }
+                        for target_url in tracked_links - existing_urls:
+                            db.add(
+                                models.CampaignRecipientLink(
+                                    tracking_id=tracking_id, target_url=target_url
+                                )
+                            )
+
                     db.commit()
 
                     time.sleep(random.uniform(0.2, 1.0))
