@@ -10,6 +10,21 @@ import os
 import sys
 import uvicorn
 
+
+def _configure_stdout_encoding():
+    """Use UTF-8 stdout/stderr so Chinese logs don't turn into mojibake on Windows."""
+    try:
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        if hasattr(sys.stderr, "reconfigure"):
+            sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        # Keep startup robust even if stream reconfiguration is unavailable.
+        pass
+
+
+_configure_stdout_encoding()
+
 # Ensure Database Tables Exist
 Base.metadata.create_all(bind=engine)
 run_startup_migrations(engine)

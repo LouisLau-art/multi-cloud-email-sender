@@ -498,7 +498,13 @@ def start_campaign(id: int, db: Session = Depends(get_db)):
         campaign.status = "sending"
         db.commit()
         try:
-            scheduler.add_job(send_campaign_batch, "date")
+            scheduler.add_job(
+                send_campaign_batch,
+                "date",
+                run_date=datetime.now(),
+                id=f"campaign_start_{id}",
+                replace_existing=True,
+            )
         except Exception as e:
             print(f"Trigger error: {e}")
         return {"status": "started"}

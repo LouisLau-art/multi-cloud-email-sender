@@ -3,6 +3,7 @@ from sqlalchemy import create_engine, StaticPool
 from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.core.database import get_db
+import app.core.scheduler as scheduler_module
 # Import Base directly from models to guarantee it has the tables registered
 from app.models.models import Base 
 import app.models.models as models_module 
@@ -109,6 +110,28 @@ def test_dashboard_stats_with_opened_and_clicked_statuses():
     assert data["click_rate"] == 33.33
 
 
+def test_send_campaign_batch_skips_overlapping_trigger(monkeypatch):
+    """当已有执行中的批次任务时，新的触发应直接跳过，不再创建 DB 会话。"""
+
+    class BusyLock:
+        def acquire(self, blocking=False):
+            return False
+
+        def release(self):
+            raise AssertionError("release should not be called when acquire fails")
+
+    def fail_get_db_session():
+        raise AssertionError(
+            "get_db_session should not be called when trigger is skipped"
+        )
+
+    monkeypatch.setattr(scheduler_module, "_send_campaign_batch_lock", BusyLock())
+    monkeypatch.setattr(scheduler_module, "get_db_session", fail_get_db_session)
+
+    # Should return early without touching DB session.
+    scheduler_module.send_campaign_batch()
+
+
 def test_click_tracking_requires_registered_target():
     """点击追踪只允许跳转到发送时登记过的 URL，防止任意重定向"""
     tracking_id = str(uuid.uuid4())
@@ -158,6 +181,110 @@ def test_click_tracking_requires_registered_target():
         assert recipient.status == "clicked"
     finally:
         db.close()
+
+
+def test_click_tracking_supports_mailto_target():
+    """mailto 链接也应能被点击追踪并记录状态。"""
+    tracking_id = str(uuid.uuid4())
+    target = "mailto:someone@example.com?subject=hello"
+
+    db = TestingSessionLocal()
+    try:
+        db.query(models_module.CampaignRecipientLink).delete()
+        db.query(models_module.CampaignRecipient).delete()
+        db.commit()
+
+        recipient = models_module.CampaignRecipient(
+            email="click-mailto@test.com",
+            tracking_id=tracking_id,
+            status="sent",
+            sent_at=datetime.datetime.utcnow(),
+        )
+        db.add(recipient)
+        db.commit()
+
+        db.add(
+            models_module.CampaignRecipientLink(
+                tracking_id=tracking_id, target_url=target
+            )
+        )
+        db.commit()
+
+        ok = client.get(
+            f"/api/track/click/{tracking_id}",
+            params={"target": target},
+            follow_redirects=False,
+        )
+        assert ok.status_code == 302
+        assert ok.headers.get("location") == target
+
+        db.refresh(recipient)
+        assert recipient.clicked_at is not None
+        assert recipient.opened_at is not None
+        assert recipient.status == "clicked"
+    finally:
+        db.close()
+
+
+def test_click_tracking_rejects_unsupported_scheme():
+    """非白名单协议（如 javascript:）必须拒绝。"""
+    tracking_id = str(uuid.uuid4())
+    target = "javascript:alert(1)"
+
+    db = TestingSessionLocal()
+    try:
+        db.query(models_module.CampaignRecipientLink).delete()
+        db.query(models_module.CampaignRecipient).delete()
+        db.commit()
+
+        recipient = models_module.CampaignRecipient(
+            email="click-js@test.com",
+            tracking_id=tracking_id,
+            status="sent",
+            sent_at=datetime.datetime.utcnow(),
+        )
+        db.add(recipient)
+        db.commit()
+
+        db.add(
+            models_module.CampaignRecipientLink(
+                tracking_id=tracking_id, target_url=target
+            )
+        )
+        db.commit()
+
+        bad = client.get(
+            f"/api/track/click/{tracking_id}",
+            params={"target": target},
+            follow_redirects=False,
+        )
+        assert bad.status_code == 400
+
+        db.refresh(recipient)
+        assert recipient.clicked_at is None
+        assert recipient.status == "sent"
+    finally:
+        db.close()
+
+
+def test_linkify_plain_text_targets_converts_url_and_email():
+    body = (
+        "<p>官网 www.1000help.com，"
+        "联系 lishijing@1000help.com 获取资料。</p>"
+    )
+    linked = scheduler_module.linkify_plain_text_targets(body)
+
+    assert 'href="https://www.1000help.com"' in linked
+    assert ">www.1000help.com</a>" in linked
+    assert 'href="mailto:lishijing@1000help.com"' in linked
+
+
+def test_linkify_plain_text_targets_keeps_existing_anchor():
+    body = '<p><a href="https://already.example.com">already</a></p>'
+    linked = scheduler_module.linkify_plain_text_targets(body)
+
+    assert linked.count("<a ") == 1
+    assert 'href="https://already.example.com"' in linked
 
 
 def test_csv_parsing_tab_delimiter():

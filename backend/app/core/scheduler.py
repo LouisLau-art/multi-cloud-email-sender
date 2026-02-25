@@ -13,21 +13,106 @@ import random
 import re
 import uuid
 import urllib.parse
+import html
+from threading import Lock
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 scheduler = BackgroundScheduler()
+_send_campaign_batch_lock = Lock()
+TRACKABLE_HREF_PATTERN = re.compile(
+    r'href\s*=\s*(["\']?)(?P<url>(?:https?://|mailto:|tel:|sms:)[^"\'>\s]+)\1',
+    re.IGNORECASE,
+)
+ANCHOR_BLOCK_PATTERN = re.compile(r"(?is)<a\b[^>]*>.*?</a>")
+HTML_TAG_PATTERN = re.compile(r"(?is)<[^>]+>")
+PLAIN_TEXT_LINK_PATTERN = re.compile(
+    r"(?P<url>(?:https?://|www\.)[^\s<>\"]+)|(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})",
+    re.IGNORECASE,
+)
+TRAILING_LINK_PUNCTUATION = ".,;:!?)]}>，。；：！？）】》"
 
 
 def get_db_session():
     return SessionLocal()
 
 
+def _split_trailing_punctuation(value: str):
+    stripped = value.rstrip(TRAILING_LINK_PUNCTUATION)
+    suffix = value[len(stripped) :]
+    return stripped, suffix
+
+
+def _linkify_text_content(text: str):
+    if not text:
+        return text
+
+    def repl(match):
+        raw_url = match.group("url")
+        if raw_url:
+            url_text, suffix = _split_trailing_punctuation(raw_url)
+            if not url_text:
+                return raw_url
+            href = (
+                url_text
+                if url_text.lower().startswith(("http://", "https://"))
+                else f"https://{url_text}"
+            )
+            return f'<a href="{href}">{url_text}</a>{suffix}'
+
+        raw_email = match.group("email")
+        email_text, suffix = _split_trailing_punctuation(raw_email)
+        if not email_text:
+            return raw_email
+        return f'<a href="mailto:{email_text}">{email_text}</a>{suffix}'
+
+    return PLAIN_TEXT_LINK_PATTERN.sub(repl, text)
+
+
+def _linkify_html_fragment(fragment: str):
+    if not fragment:
+        return fragment
+
+    out = []
+    last = 0
+    for tag_match in HTML_TAG_PATTERN.finditer(fragment):
+        out.append(_linkify_text_content(fragment[last : tag_match.start()]))
+        out.append(tag_match.group(0))
+        last = tag_match.end()
+    out.append(_linkify_text_content(fragment[last:]))
+    return "".join(out)
+
+
+def linkify_plain_text_targets(body: str):
+    """
+    Convert plain text URLs/emails in HTML text nodes into anchor tags.
+    Existing <a>...</a> blocks are preserved to avoid nested anchors.
+    """
+    if not body:
+        return body
+
+    out = []
+    last = 0
+    for anchor_match in ANCHOR_BLOCK_PATTERN.finditer(body):
+        out.append(_linkify_html_fragment(body[last : anchor_match.start()]))
+        out.append(anchor_match.group(0))
+        last = anchor_match.end()
+    out.append(_linkify_html_fragment(body[last:]))
+    return "".join(out)
+
+
 def send_campaign_batch():
-    db = get_db_session()
+    if not _send_campaign_batch_lock.acquire(blocking=False):
+        logger.info(
+            "send_campaign_batch is already running; skip overlapping trigger."
+        )
+        return
+
+    db = None
     try:
-        # 0. 检查计划任务
+        db = get_db_session()
+        # 0. 濡偓閺屻儴顓搁崚鎺嶆崲閸?
         scheduled_campaigns = (
             db.query(models.Campaign)
             .filter(models.Campaign.status == "scheduled")
@@ -38,7 +123,7 @@ def send_campaign_batch():
                 sc.status = "sending"
                 db.commit()
 
-        # 1. 查找运行中的任务
+        # 1. 閺屻儲澹樻潻鎰攽娑擃厾娈戞禒璇插
         active_campaigns = (
             db.query(models.Campaign).filter(models.Campaign.status == "sending").all()
         )
@@ -69,7 +154,7 @@ def send_campaign_batch():
                 db.commit()
                 continue
 
-            # 间隔检查
+            # 闂傛挳娈уΛ鈧弻?
             last_batch = (
                 db.query(models.CampaignBatch)
                 .filter(models.CampaignBatch.campaign_id == campaign.id)
@@ -84,7 +169,7 @@ def send_campaign_batch():
                 if time_since_last < campaign.interval_minutes:
                     continue
 
-            # 获取联系人
+            # 閼惧嘲褰囬懕鏃傞兇娴?
             contacts = (
                 db.query(models.Contact)
                 .filter(models.Contact.list_id == campaign.list_id)
@@ -117,7 +202,7 @@ def send_campaign_batch():
                 tracking_id = str(uuid.uuid4())
                 tracked_links = set()
 
-                # 记录发送日志
+                # 鐠佹澘缍嶉崣鎴︹偓浣规）韫?
                 recipient = models.CampaignRecipient(
                     campaign_id=campaign.id,
                     contact_id=contact.id,
@@ -126,9 +211,9 @@ def send_campaign_batch():
                     status="sending",
                 )
                 db.add(recipient)
-                db.commit()  # 先提交以获得 ID (虽然这里 UUID 够用了)
+                db.commit()  # 閸忓牊褰佹禍銈勪簰閼惧嘲绶?ID (閾忕晫鍔ф潻娆撳櫡 UUID 婢剁喓鏁ゆ禍?
 
-                # 准备变量
+                # 閸戝棗顦崣姗€鍣?
                 vars_map = json.loads(contact.extra_vars) if contact.extra_vars else {}
                 if contact.name:
                     vars_map["Name"] = contact.name
@@ -136,13 +221,13 @@ def send_campaign_batch():
                     vars_map["username"] = contact.name
                 vars_map["Email"] = contact.email or ""
 
-                # 标题替换 (关键：同时支持 {key} 和 {{key}})
+                # 閺嶅洭顣介弴鎸庡床 (閸忔娊鏁敍姘倱閺冭埖鏁幐?{key} 閸?{{key}})
                 subject = template.subject
                 for key, val in vars_map.items():
                     subject = subject.replace(f"{{{key}}}", str(val))
                     subject = subject.replace(f"{{{{{key}}}}}", str(val))
 
-                # 清理未匹配的占位符：将 {任意内容} 中的花括号移除，保留内部文本
+                # 濞撳懐鎮婇張顏勫爱闁板秶娈戦崡鐘辩秴缁楋讣绱扮亸?{娴犵粯鍓伴崘鍛啇} 娑擃厾娈戦懞杈ㄥ閸欓些闂勩倧绱濇穱婵堟殌閸愬懘鍎撮弬鍥ㄦ拱
                 subject = re.sub(r"\{([^{}]+)\}", r"\1", subject)
 
                 real_from_alias = (
@@ -152,20 +237,20 @@ def send_campaign_batch():
                     or campaign.account_name.split("@")[0]
                 )
 
-                # 追踪像素 URL (从配置读取)
+                # 鏉╁€熼嚋閸嶅繒绀?URL (娴犲酣鍘ょ純顔款嚢閸?
                 track_base_url = setting.track_domain or "http://192.168.2.8:8000"
-                # 移除末尾斜杠
+                # 缁夊娅庨張顐㈢啲閺傛粍娼?
                 if track_base_url.endswith("/"):
                     track_base_url = track_base_url[:-1]
 
                 pixel_url = f"{track_base_url}/api/track/open/{tracking_id}"
                 pixel_html = f'<img src="{pixel_url}" width="1" height="1" style="display:none" />'
 
-                # 链接追踪替换函数
+                # 闁剧偓甯存潻鍊熼嚋閺囨寧宕查崙鑺ユ殶
                 def replace_link(match):
-                    quote = match.group(1)
-                    original_url = match.group(2)
-                    # 避免替换已经是追踪链接的URL
+                    quote = match.group(1) or '"'
+                    original_url = html.unescape(match.group("url").strip())
+                    # 闁灝鍘ら弴鎸庡床瀹歌尙绮￠弰顖濇嫹闊亪鎽奸幒銉ф畱URL
                     if "/api/track" in original_url:
                         return match.group(0)
                     encoded_url = urllib.parse.quote(original_url, safe="")
@@ -176,11 +261,8 @@ def send_campaign_batch():
                 try:
                     if campaign.provider == "tencent":
                         if template.provider == "tencent" and template.provider_id:
-                            # 腾讯云模板模式
-                            # 尝试注入 pixel 到变量中，如果模板支持 {{tracking_pixel}}
-                            # 但大多数时候模板不支持，所以模板模式的追踪比较困难，除非模板里预留了位置
-                            # 这里暂时跳过模板模式的像素注入，或者仅仅依赖 send_mail 成功
-
+                            # 閼垫崘顔嗘禍鎴災侀弶鎸幠佸?                            # 鐏忔繆鐦▔銊ュ弳 pixel 閸掓澘褰夐柌蹇庤厬閿涘苯顩ч弸婊勀侀弶鎸庢暜閹?{{tracking_pixel}}
+                            # 娴ｅ棗銇囨径姘殶閺冭泛鈧瑦膩閺夊じ绗夐弨顖涘瘮閿涘本澧嶆禒銉δ侀弶鎸幠佸蹇曟畱鏉╁€熼嚋濮ｆ棁绶濋崶浼存閿涘矂娅庨棃鐐茨侀弶鍧楀櫡妫板嫮鏆€娴滃棔缍呯純?                            # 鏉╂瑩鍣烽弳鍌涙鐠哄疇绻冨Ο鈩冩緲濡€崇础閻ㄥ嫬鍎氱槐鐘虫暈閸忋儻绱濋幋鏍偓鍛矌娴犲懍绶风挧?send_mail 閹存劕濮?
                             tencent_response = TencentService.send_mail(
                                 setting.tencent_secret_id,
                                 setting.tencent_secret_key,
@@ -201,16 +283,17 @@ def send_campaign_batch():
                                 recipient.message_id = tencent_response.MessageId
                                 recipient.provider = "tencent"
                         else:
-                            # 腾讯云 HTML 模式
+                            # 閼垫崘顔嗘禍?HTML 濡€崇础
                             body = template.body
                             for key, val in vars_map.items():
                                 body = body.replace(f"{{{key}}}", str(val))
                                 body = body.replace(f"{{{{{key}}}}}", str(val))
 
-                            # 清理未匹配的变量 (只清理看起来像变量的，避免破坏 CSS/JS)
+                            # 濞撳懐鎮婇張顏勫爱闁板秶娈戦崣姗€鍣?(閸欘亝绔婚悶鍡欐箙鐠ч攱娼甸崓蹇撳綁闁插繒娈戦敍宀勪缉閸忓秶鐗崸?CSS/JS)
                             body = re.sub(r"\{([\w\s]+)\}", r"\1", body)
+                            body = linkify_plain_text_targets(body)
 
-                            # 1. 注入像素
+                            # 1. 濞夈劌鍙嗛崓蹇曠
                             if campaign.track_opens:
                                 if "</body>" in body:
                                     body = body.replace(
@@ -225,15 +308,13 @@ def send_campaign_batch():
                                         f"Injecting pixel for {clean_to_address}: Appended to end"
                                     )
 
-                            # 2. 替换点击链接
+                            # 2. 閺囨寧宕查悙鐟板毊闁剧偓甯?
                             if campaign.track_clicks:
-                                original_body_len = len(body)
-                                body = re.sub(
-                                    r'href\s*=\s*(["\'])(http[^"\']+)\1',
+                                body, replaced_links = TRACKABLE_HREF_PATTERN.subn(
                                     replace_link,
                                     body,
                                 )
-                                if len(body) != original_body_len:
+                                if replaced_links:
                                     logger.info(
                                         f"Link tracking injected for {clean_to_address}"
                                     )
@@ -261,10 +342,11 @@ def send_campaign_batch():
                             body = body.replace(f"{{{key}}}", str(val))
                             body = body.replace(f"{{{{{key}}}}}", str(val))
 
-                        # 清理未匹配的变量 (只清理看起来像变量的，避免破坏 CSS/JS)
+                        # 濞撳懐鎮婇張顏勫爱闁板秶娈戦崣姗€鍣?(閸欘亝绔婚悶鍡欐箙鐠ч攱娼甸崓蹇撳綁闁插繒娈戦敍宀勪缉閸忓秶鐗崸?CSS/JS)
                         body = re.sub(r"\{([\w\s]+)\}", r"\1", body)
+                        body = linkify_plain_text_targets(body)
 
-                        # 1. 注入像素
+                        # 1. 濞夈劌鍙嗛崓蹇曠
                         if campaign.track_opens:
                             if "</body>" in body:
                                 body = body.replace("</body>", f"{pixel_html}</body>")
@@ -274,18 +356,17 @@ def send_campaign_batch():
                             else:
                                 body += pixel_html
 
-                        # 2. 替换点击链接
+                        # 2. 閺囨寧宕查悙鐟板毊闁剧偓甯?
                         if campaign.track_clicks:
-                            original_body_len = len(body)
-                            body = re.sub(
-                                r'href\s*=\s*(["\'])(http[^"\']+)\1', replace_link, body
+                            body, replaced_links = TRACKABLE_HREF_PATTERN.subn(
+                                replace_link, body
                             )
-                            if len(body) != original_body_len:
+                            if replaced_links:
                                 logger.info(
                                     f"Link tracking injected for {clean_to_address} (Aliyun)"
                                 )
 
-                        # 阿里云: 如果 campaign.reply_to_address 有值，则认为开启回信地址功能 (True)
+                        # 闂冨潡鍣锋禍? 婵″倹鐏?campaign.reply_to_address 閺堝鈧》绱濋崚娆掝吇娑撳搫绱戦崥顖氭礀娣団€虫勾閸р偓閸旂喕鍏?(True)
                         use_reply_to = True if campaign.reply_to_address else False
 
                         AliyunService.single_send_mail(
@@ -300,7 +381,7 @@ def send_campaign_batch():
                         )
 
                     logger.info(f"[{i + 1}/{len(contacts)}] Sent to {clean_to_address}")
-                    # 更新状态为 sent
+                    # 閺囧瓨鏌婇悩鑸碘偓浣疯礋 sent
                     recipient.status = "sent"
                     recipient.sent_at = datetime.utcnow()
 
@@ -324,12 +405,12 @@ def send_campaign_batch():
 
                     time.sleep(random.uniform(0.2, 1.0))
                 except Exception as e:
-                    logger.error(f"❌ FAILED: {clean_to_address} - {e}")
+                    logger.error(f"閴?FAILED: {clean_to_address} - {e}")
                     recipient.status = "failed"
                     recipient.error_message = str(e)
                     db.commit()
 
-            # 更新进度
+            # 閺囧瓨鏌婃潻娑樺
             campaign.sent_count += len(contacts)
             if campaign.sent_count >= campaign.total_recipients:
                 campaign.status = "completed"
@@ -344,12 +425,14 @@ def send_campaign_batch():
             )
             db.commit()
     finally:
-        db.close()
+        if db is not None:
+            db.close()
+        _send_campaign_batch_lock.release()
 
 
 def pull_email_tracking_status():
     """
-    后台任务：从腾讯云拉取邮件追踪状态 (打开/点击)
+    后台任务：从腾讯云拉取邮件追踪状态(打开/点击)
     每 5 分钟运行一次，查询最近 7 天内有 message_id 的收件人记录
     """
     db = get_db_session()
@@ -360,9 +443,8 @@ def pull_email_tracking_status():
             or not setting.tencent_secret_id
             or not setting.tencent_secret_key
         ):
-            return  # 没有配置腾讯云，跳过
-
-        # 查询最近 7 天内待同步的腾讯云收件人
+            return  # 濞屸剝婀侀柊宥囩枂閼垫崘顔嗘禍鎴礉鐠哄疇绻?
+        # 閺屻儴顕楅張鈧潻?7 婢垛晛鍞村鍛倱濮濄儳娈戦懙鎹愵唵娴滄垶鏁规禒鏈垫眽
         from datetime import timedelta
 
         seven_days_ago = datetime.utcnow() - timedelta(days=7)
@@ -370,7 +452,7 @@ def pull_email_tracking_status():
             models.CampaignRecipient.provider == "tencent",
             models.CampaignRecipient.message_id.isnot(None),
             models.CampaignRecipient.sent_at >= seven_days_ago,
-            # 仍需要追踪更新的记录：sent/opened（clicked 视为终态）
+            # 娴犲秹娓剁憰浣芥嫹闊亝娲块弬鎵畱鐠佹澘缍嶉敍姝磂nt/opened閿涘潏licked 鐟欏棔璐熺紒鍫熲偓渚婄礆
             models.CampaignRecipient.status.in_(["sent", "opened"]),
         )
 
@@ -384,7 +466,7 @@ def pull_email_tracking_status():
 
         logger.info(f"[Pull Tracking] Pending Tencent recipients: {pending_count}")
 
-        # 仅拉取存在未完成追踪记录的日期，减少无效 API 查询
+        # 娴犲懏濯洪崣鏍х摠閸︺劍婀€瑰本鍨氭潻鍊熼嚋鐠佹澘缍嶉惃鍕）閺堢噦绱濋崙蹇撶毌閺冪姵鏅?API 閺屻儴顕?
         pending_dates = (
             db.query(func.date(models.CampaignRecipient.sent_at))
             .filter(*unresolved_filters)
@@ -455,14 +537,14 @@ def pull_email_tracking_status():
                         user_opened = bool(getattr(cloud_status, "UserOpened", False))
                         user_clicked = bool(getattr(cloud_status, "UserClicked", False))
 
-                        # 打开：只记录首个打开时间
+                        # 閹垫挸绱戦敍姘涧鐠佹澘缍嶆＃鏍﹂嚋閹垫挸绱戦弮鍫曟？
                         if user_opened and not recipient.opened_at:
                             recipient.opened_at = now
                             updated = True
                             if recipient.status == "sent":
                                 recipient.status = "opened"
 
-                        # 点击：点击优先级高于打开
+                        # 閻愮懓鍤敍姘卞仯閸戣绱崗鍫㈤獓妤傛ü绨幍鎾崇磻
                         if user_clicked:
                             if not recipient.clicked_at:
                                 recipient.clicked_at = now
@@ -473,7 +555,7 @@ def pull_email_tracking_status():
                             if recipient.status != "clicked":
                                 recipient.status = "clicked"
                                 updated = True
-                            # clicked 视为终态，避免后续重复检查
+                            # clicked 鐟欏棔璐熺紒鍫熲偓渚婄礉闁灝鍘ら崥搴ｇ敾闁插秴顦插Λ鈧弻?
                             date_recipient_map.pop(message_id, None)
 
                         if updated:
@@ -512,7 +594,22 @@ def pull_email_tracking_status():
 
 def start_scheduler():
     if not scheduler.running:
-        scheduler.add_job(send_campaign_batch, "interval", minutes=1)
-        # 添加 Pull Tracking 任务，每 5 分钟运行一次
-        scheduler.add_job(pull_email_tracking_status, "interval", minutes=5)
+        scheduler.add_job(
+            send_campaign_batch,
+            "interval",
+            minutes=1,
+            id="send_campaign_batch_interval",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
+        scheduler.add_job(
+            pull_email_tracking_status,
+            "interval",
+            minutes=5,
+            id="pull_email_tracking_status_interval",
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+        )
         scheduler.start()

@@ -49,7 +49,17 @@ def track_click(tracking_id: str, target: str, db: Session = Depends(get_db)):
     Records the click event and redirects to the target URL.
     """
     parsed = urlparse(target)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+    scheme = (parsed.scheme or "").lower()
+    if scheme in {"http", "https"}:
+        if not parsed.netloc:
+            raise HTTPException(status_code=400, detail="Invalid redirect target")
+    elif scheme == "mailto":
+        if not parsed.path:
+            raise HTTPException(status_code=400, detail="Invalid redirect target")
+    elif scheme in {"tel", "sms"}:
+        if not parsed.path:
+            raise HTTPException(status_code=400, detail="Invalid redirect target")
+    else:
         raise HTTPException(status_code=400, detail="Invalid redirect target")
 
     allowed = (
