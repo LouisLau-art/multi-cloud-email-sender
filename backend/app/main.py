@@ -4,6 +4,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from .api import endpoints, tracking, dashboard
 from .core.database import engine, Base
+from .core.db_migrations import run_startup_migrations
 from .core.scheduler import scheduler, start_scheduler
 import os
 import sys
@@ -11,6 +12,7 @@ import uvicorn
 
 # Ensure Database Tables Exist
 Base.metadata.create_all(bind=engine)
+run_startup_migrations(engine)
 
 app = FastAPI(title="Email Marketing System")
 
