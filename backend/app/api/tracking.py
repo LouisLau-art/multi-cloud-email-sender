@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends, HTTPException, Response, Request
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, HTMLResponse
 from sqlalchemy.orm import Session
 from datetime import datetime
 from ..core.database import get_db
 from ..models import models
 import base64
+import json
+from html import escape
 from urllib.parse import urlparse
 
 router = APIRouter()
@@ -89,4 +91,18 @@ def track_click(tracking_id: str, target: str, db: Session = Depends(get_db)):
             recipient.status = "clicked"
             db.commit()
 
-    return RedirectResponse(url=target, status_code=302)
+    if scheme in {"http", "https"}:
+        return RedirectResponse(url=target, status_code=302)
+
+    escaped_href = escape(target, quote=True)
+    # httpx TestClient cannot parse non-http Location redirects (mailto/tel/sms),
+    # so for these schemes we return a tiny handoff page and trigger navigation client-side.
+    handoff_html = (
+        "<!doctype html>"
+        "<html><head><meta charset='utf-8'><title>Redirecting</title></head>"
+        "<body>"
+        f"<script>window.location.href = {json.dumps(target)};</script>"
+        f"<a href=\"{escaped_href}\">Continue</a>"
+        "</body></html>"
+    )
+    return HTMLResponse(content=handoff_html, status_code=200)

@@ -28,7 +28,7 @@ TRACKABLE_HREF_PATTERN = re.compile(
 ANCHOR_BLOCK_PATTERN = re.compile(r"(?is)<a\b[^>]*>.*?</a>")
 HTML_TAG_PATTERN = re.compile(r"(?is)<[^>]+>")
 PLAIN_TEXT_LINK_PATTERN = re.compile(
-    r"(?P<url>(?:https?://|www\.)[^\s<>\"]+)|(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})",
+    r"(?P<url>(?:https?://|www\.)[^\s<>\"'，。；：！？（）【】《》、]+)|(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})",
     re.IGNORECASE,
 )
 TRAILING_LINK_PUNCTUATION = ".,;:!?)]}>，。；：！？）】》"

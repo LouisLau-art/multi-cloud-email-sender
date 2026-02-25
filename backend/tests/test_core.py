@@ -215,8 +215,9 @@ def test_click_tracking_supports_mailto_target():
             params={"target": target},
             follow_redirects=False,
         )
-        assert ok.status_code == 302
-        assert ok.headers.get("location") == target
+        assert ok.status_code == 200
+        assert ok.headers.get("location") is None
+        assert target in ok.text
 
         db.refresh(recipient)
         assert recipient.clicked_at is not None
