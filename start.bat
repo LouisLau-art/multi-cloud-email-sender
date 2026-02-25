@@ -141,6 +141,7 @@ echo.
 echo App running.
 echo Backend: http://localhost:8000
 echo Frontend: http://localhost:5173
+call :PrintFrontendNetworkInfo
 echo.
 echo Logs:
 echo   %BACKEND_LOG%
@@ -198,5 +199,18 @@ set "PORT=%~1"
 for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"') do (
     echo [INFO] Killing PID %%P on port %PORT%.
     taskkill /F /PID %%P >nul 2>&1
+)
+exit /b 0
+
+:PrintFrontendNetworkInfo
+set "HAS_FRONTEND_IP=0"
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$ips = Get-NetIPConfiguration -ErrorAction SilentlyContinue | ForEach-Object { $_.IPv4Address.IPAddress } | Where-Object { $_ -and $_ -ne '127.0.0.1' } | Sort-Object -Unique; $ips"`) do (
+    set "HAS_FRONTEND_IP=1"
+    echo [frontend]   -^> Network: http://%%I:5173/
+    echo [%date% %time%] [frontend]   -^> Network: http://%%I:5173/>>"%FRONTEND_LOG%"
+)
+if "%HAS_FRONTEND_IP%"=="0" (
+    echo [frontend]   -^> Network: unavailable ^(no non-loopback IPv4 detected^)
+    echo [%date% %time%] [frontend]   -^> Network: unavailable ^(no non-loopback IPv4 detected^)>>"%FRONTEND_LOG%"
 )
 exit /b 0

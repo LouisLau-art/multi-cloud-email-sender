@@ -3,6 +3,8 @@
 # Usage:
 #   ./start.sh       Foreground mode: show logs in terminal + persist to ./logs/*.log
 #   ./start.sh -d    Daemon mode: run in background, logs persisted to ./logs/*.log
+#   ./start.sh -k    Force-kill listeners on ports 8000/5173 before start
+#   ./start.sh -s    Stop listeners on ports 8000/5173 and exit
 
 set -u
 
@@ -16,9 +18,31 @@ STARTUP_TIMEOUT_SECONDS=8
 BACKEND_PYTHON=""
 
 DAEMON_MODE=false
-if [ "${1:-}" = "-d" ]; then
-    DAEMON_MODE=true
-fi
+FORCE_KILL=false
+STOP_ONLY=false
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -d)
+            DAEMON_MODE=true
+            ;;
+        -k)
+            FORCE_KILL=true
+            ;;
+        -s)
+            STOP_ONLY=true
+            ;;
+        *)
+            echo "[ERROR] Unknown option: $1"
+            echo "Usage: ./start.sh [-d] [-k] [-s]"
+            echo "  -d  Start in daemon mode (do not follow logs)"
+            echo "  -k  Force-kill listeners on 8000/5173 before start"
+            echo "  -s  Stop listeners on 8000/5173 and exit"
+            exit 1
+            ;;
+    esac
+    shift
+done
 
 mkdir -p "$LOG_DIR"
 touch "$BACKEND_LOG" "$FRONTEND_LOG"
@@ -128,6 +152,38 @@ cleanup_daemon() {
     kill "${BACKEND_PID:-}" "${FRONTEND_PID:-}" 2>/dev/null || true
 }
 
+get_port_listener_pids() {
+    local port="$1"
+    if command -v lsof >/dev/null 2>&1; then
+        lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null | sort -u
+        return 0
+    fi
+
+    ss -ltnp 2>/dev/null \
+        | awk -v p="$port" '$4 ~ (":" p "$") {print $NF}' \
+        | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' \
+        | sort -u
+}
+
+kill_port_listeners() {
+    local port="$1"
+    local pids
+    pids="$(get_port_listener_pids "$port")"
+    if [ -z "$pids" ]; then
+        return 0
+    fi
+
+    while read -r pid; do
+        [ -z "$pid" ] && continue
+        echo "[WARN] Killing PID $pid on port $port"
+        kill "$pid" >/dev/null 2>&1 || true
+        sleep 1
+        if kill -0 "$pid" >/dev/null 2>&1; then
+            kill -9 "$pid" >/dev/null 2>&1 || true
+        fi
+    done <<< "$pids"
+}
+
 is_port_listening() {
     local port="$1"
     ss -ltn 2>/dev/null | awk '{print $4}' | grep -Eq "[:.]${port}$"
@@ -151,8 +207,41 @@ wait_for_service() {
     return 1
 }
 
-echo "Stopping existing services on ports 8000/5173..."
+print_frontend_network_info() {
+    local ips=""
+    if command -v hostname >/dev/null 2>&1; then
+        ips="$(hostname -I 2>/dev/null | tr ' ' '\n' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$' | sort -u || true)"
+    fi
+
+    if [ -z "$ips" ] && command -v ip >/dev/null 2>&1; then
+        ips="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | sort -u || true)"
+    fi
+
+    if [ -n "$ips" ]; then
+        while read -r ip; do
+            [ -z "$ip" ] && continue
+            local line="[frontend]   -> Network: http://$ip:5173/"
+            echo "$line"
+            printf "%s %s\n" "$(date '+[%Y-%m-%d %H:%M:%S]')" "$line" >> "$FRONTEND_LOG"
+        done <<< "$ips"
+    else
+        local line="[frontend]   -> Network: unavailable (no non-loopback IPv4 detected)"
+        echo "$line"
+        printf "%s %s\n" "$(date '+[%Y-%m-%d %H:%M:%S]')" "$line" >> "$FRONTEND_LOG"
+    fi
+}
+
+echo "Stopping existing managed services..."
 stop_existing
+
+if [ "$STOP_ONLY" = true ]; then
+    echo "Stopping listeners on ports 8000/5173..."
+    kill_port_listeners 8000
+    kill_port_listeners 5173
+    rm -f "$BACKEND_PID_FILE" "$FRONTEND_PID_FILE"
+    echo "Done."
+    exit 0
+fi
 
 if ! resolve_backend_python; then
     exit 1
@@ -160,6 +249,12 @@ fi
 echo "Backend Python: $BACKEND_PYTHON"
 if ! check_backend_runtime; then
     exit 1
+fi
+
+if [ "$FORCE_KILL" = true ]; then
+    echo "[WARN] Force-killing listeners on 8000/5173..."
+    kill_port_listeners 8000
+    kill_port_listeners 5173
 fi
 
 if is_port_listening 8000; then
@@ -210,6 +305,7 @@ fi
 echo "App running!"
 echo "Backend: http://localhost:8000"
 echo "Frontend: http://localhost:5173"
+print_frontend_network_info
 echo "Logs:"
 echo "  $BACKEND_LOG"
 echo "  $FRONTEND_LOG"
@@ -223,7 +319,7 @@ if [ "$DAEMON_MODE" = true ]; then
     echo "  tail -f $BACKEND_LOG"
     echo "  tail -f $FRONTEND_LOG"
     echo "Stop:"
-    echo "  kill \$(cat $BACKEND_PID_FILE) \$(cat $FRONTEND_PID_FILE)"
+    echo "  ./start.sh -s"
 else
     echo "Foreground mode: logs are shown in terminal and persisted to files."
     echo "Press Ctrl+C to stop."
