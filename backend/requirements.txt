@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+alibabacloud_dm20151123
+alibabacloud_tea_openapi
+tencentcloud-sdk-python
+apscheduler
+python-multipart
+pandas
+requests
+openpyxl

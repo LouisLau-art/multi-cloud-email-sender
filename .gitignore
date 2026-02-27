@@ -1,0 +1,13 @@
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+email_app.db
+backend/email_app.db
+dist/
+.DS_Store
+.env
+logs/
+exports/
+cloudflared-config.yml
+build/
