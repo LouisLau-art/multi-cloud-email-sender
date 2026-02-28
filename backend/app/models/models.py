@@ -34,6 +34,32 @@ class Setting(Base):
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
+class CloudAccount(Base):
+    __tablename__ = "cloud_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    provider = Column(String, nullable=False, index=True)  # 'aliyun' or 'tencent'
+    name = Column(String, nullable=False)
+
+    # Aliyun
+    access_key_id = Column(String, nullable=True)
+    access_key_secret = Column(String, nullable=True)
+    region_id = Column(String, nullable=True, default="cn-hangzhou")
+
+    # Tencent
+    tencent_secret_id = Column(String, nullable=True)
+    tencent_secret_key = Column(String, nullable=True)
+    tencent_region = Column(String, nullable=True, default="ap-hongkong")
+
+    from_alias = Column(String, nullable=True)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    templates = relationship("EmailTemplate", back_populates="account")
+    campaigns = relationship("Campaign", back_populates="account")
+
+
 class SavedReplyTo(Base):
     """存储用户常用的回信地址"""
 
@@ -77,8 +103,10 @@ class EmailTemplate(Base):
     provider_id = Column(
         String, nullable=True
     )  # Cloud Template ID (e.g. 12345 or 'template_abc')
+    account_id = Column(Integer, ForeignKey("cloud_accounts.id"), nullable=True, index=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
+    account = relationship("CloudAccount", back_populates="templates")
 
 
 class Campaign(Base):
@@ -86,6 +114,7 @@ class Campaign(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String)
     provider = Column(String, default="aliyun")  # 'aliyun' or 'tencent'
+    account_id = Column(Integer, ForeignKey("cloud_accounts.id"), nullable=True, index=True)
     template_id = Column(Integer, ForeignKey("templates.id"))
     list_id = Column(Integer, ForeignKey("contact_lists.id"))
     account_name = Column(String)  # Aliyun sender address
@@ -116,6 +145,7 @@ class Campaign(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     batches = relationship("CampaignBatch", back_populates="campaign")
+    account = relationship("CloudAccount", back_populates="campaigns")
 
 
 class CampaignBatch(Base):

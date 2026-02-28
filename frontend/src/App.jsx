@@ -3,7 +3,7 @@ import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table,
 import { UploadOutlined, UserOutlined, MailOutlined, SettingOutlined, RocketOutlined, EditOutlined, DeleteOutlined, PlusOutlined, PieChartOutlined, CheckCircleOutlined, SyncOutlined, CloseCircleOutlined, EyeOutlined, DownloadOutlined } from '@ant-design/icons';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, Legend, ResponsiveContainer } from 'recharts';
-import api, { contactApi, settingsApi, dashboardApi } from './services/api';
+import api, { contactApi, settingsApi, dashboardApi, accountApi } from './services/api';
 import dayjs from 'dayjs';
 
 const { Header, Content, Sider } = Layout;
@@ -222,44 +222,210 @@ const Dashboard = () => {
 // --- Components ---
 
 const Settings = () => {
-  const [form] = Form.useForm();
+  const [settingsForm] = Form.useForm();
+  const [accountForm] = Form.useForm();
+  const [accounts, setAccounts] = useState([]);
+  const [editingAccountId, setEditingAccountId] = useState(null);
+  const accountProvider = Form.useWatch('provider', accountForm) || 'aliyun';
+
+  const loadSettings = () => {
+    settingsApi.get().then(res => {
+      if (res.data) {
+        settingsForm.setFieldsValue({
+          track_domain: res.data.track_domain,
+          from_alias: res.data.from_alias,
+        });
+      }
+    });
+  };
+
+  const loadAccounts = () => {
+    accountApi.getAll().then(res => setAccounts(res.data || []));
+  };
 
   useEffect(() => {
-    api.get('/settings').then(res => {
-      if(res.data) form.setFieldsValue(res.data);
-    });
+    loadSettings();
+    loadAccounts();
+    accountForm.setFieldsValue({ provider: 'aliyun', enabled: true });
   }, []);
 
-  const onFinish = (values) => {
-    api.post('/settings', values).then(() => message.success('保存成功！'));
+  const onSaveSettings = (values) => {
+    settingsApi.update(values).then(() => message.success('全局设置保存成功'));
   };
+
+  const resetAccountForm = () => {
+    setEditingAccountId(null);
+    accountForm.resetFields();
+    accountForm.setFieldsValue({ provider: 'aliyun', enabled: true });
+  };
+
+  const onEditAccount = (row) => {
+    setEditingAccountId(row.id);
+    accountForm.setFieldsValue({
+      provider: row.provider,
+      name: row.name,
+      from_alias: row.from_alias,
+      enabled: row.enabled,
+      access_key_id: row.access_key_id,
+      region_id: row.region_id || 'cn-hangzhou',
+      tencent_secret_id: row.tencent_secret_id,
+      tencent_region: row.tencent_region || 'ap-hongkong',
+      access_key_secret: '',
+      tencent_secret_key: '',
+    });
+  };
+
+  const onSubmitAccount = async () => {
+    try {
+      const values = await accountForm.validateFields();
+      const payload = {
+        provider: values.provider,
+        name: values.name,
+        from_alias: values.from_alias,
+        enabled: values.enabled,
+        access_key_id: values.access_key_id,
+        access_key_secret: values.access_key_secret,
+        region_id: values.region_id,
+        tencent_secret_id: values.tencent_secret_id,
+        tencent_secret_key: values.tencent_secret_key,
+        tencent_region: values.tencent_region,
+      };
+      if (editingAccountId) {
+        await accountApi.update(editingAccountId, payload);
+        message.success('账号更新成功');
+      } else {
+        await accountApi.create(payload);
+        message.success('账号创建成功');
+      }
+      resetAccountForm();
+      loadAccounts();
+    } catch (e) {
+      if (e?.errorFields) return;
+      message.error('保存账号失败: ' + (e.response?.data?.detail || e.message));
+    }
+  };
+
+  const onDeleteAccount = async (id) => {
+    try {
+      await accountApi.delete(id);
+      message.success('账号删除成功');
+      if (editingAccountId === id) resetAccountForm();
+      loadAccounts();
+    } catch (e) {
+      message.error('删除失败: ' + (e.response?.data?.detail || e.message));
+    }
+  };
+
+  const accountColumns = [
+    {
+      title: '服务商',
+      dataIndex: 'provider',
+      key: 'provider',
+      render: (p) => p === 'aliyun' ? <Tag color="orange">阿里云</Tag> : <Tag color="blue">腾讯云</Tag>,
+    },
+    { title: '账号名称', dataIndex: 'name', key: 'name' },
+    { title: 'AK/SecretID', dataIndex: 'access_key_id', key: 'ak', render: (_, row) => row.provider === 'aliyun' ? (row.access_key_id || '-') : (row.tencent_secret_id || '-') },
+    { title: '区域', dataIndex: 'region_id', key: 'region', render: (_, row) => row.provider === 'aliyun' ? (row.region_id || '-') : (row.tencent_region || '-') },
+    { title: '默认昵称', dataIndex: 'from_alias', key: 'alias', render: (v) => v || '-' },
+    { title: '状态', dataIndex: 'enabled', key: 'enabled', render: (v) => v ? <Tag color="green">启用</Tag> : <Tag>禁用</Tag> },
+    {
+      title: '操作',
+      key: 'action',
+      render: (_, row) => (
+        <Space>
+          <Button size="small" onClick={() => onEditAccount(row)}>编辑</Button>
+          <Popconfirm title="确定删除该账号？" onConfirm={() => onDeleteAccount(row.id)}>
+            <Button size="small" danger>删除</Button>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ];
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-      <Card title="系统配置">
-        <Form form={form} layout="vertical" onFinish={onFinish}>
-          <h3>阿里云配置 (DirectMail)</h3>
-          <div style={{ display: 'flex', gap: 20 }}>
-            <Form.Item name="access_key_id" label="Aliyun Access Key ID" style={{flex: 1}}><Input /></Form.Item>
-            <Form.Item name="access_key_secret" label="Aliyun Access Key Secret" style={{flex: 1}}><Input.Password /></Form.Item>
-          </div>
-          <Form.Item name="region_id" label="区域 ID" initialValue="cn-hangzhou"><Input placeholder="cn-hangzhou" /></Form.Item>
-          
-          <hr style={{ border: '0.5px solid #eee', margin: '20px 0' }} />
-          
-          <h3>腾讯云配置 (SES)</h3>
-          <div style={{ display: 'flex', gap: 20 }}>
-            <Form.Item name="tencent_secret_id" label="Tencent Secret ID" style={{flex: 1}}><Input /></Form.Item>
-            <Form.Item name="tencent_secret_key" label="Tencent Secret Key" style={{flex: 1}}><Input.Password /></Form.Item>
-          </div>
-          <Form.Item name="tencent_region" label="腾讯云区域" initialValue="ap-hongkong"><Input placeholder="ap-hongkong" /></Form.Item>
-          
-          <hr style={{ border: '0.5px solid #eee', margin: '20px 0' }} />
-
+      <Card title="全局设置">
+        <Form form={settingsForm} layout="vertical" onFinish={onSaveSettings}>
           <Form.Item name="track_domain" label="追踪域名/IP 配置" tooltip="用于生成邮件中的开信和点击追踪链接。格式如：http://192.168.2.8:8000 或 https://your-domain.com。请确保收件人能访问此地址。"><Input placeholder="http://192.168.2.8:8000" /></Form.Item>
-          <Form.Item name="from_alias" label="全局默认发件人昵称" tooltip="当模板未设置时使用"><Input /></Form.Item>
-          <Button type="primary" htmlType="submit">保存所有配置</Button>
+          <Form.Item name="from_alias" label="全局默认发件人昵称" tooltip="当模板和账号未设置昵称时使用"><Input /></Form.Item>
+          <Button type="primary" htmlType="submit">保存全局设置</Button>
         </Form>
+      </Card>
+
+      <Card title="云账号管理">
+        <Form form={accountForm} layout="vertical" initialValues={{ provider: 'aliyun', enabled: true }}>
+          <Row gutter={16}>
+            <Col span={6}>
+              <Form.Item name="provider" label="服务商" rules={[{ required: true, message: '请选择服务商' }]}>
+                <Select disabled={!!editingAccountId}>
+                  <Select.Option value="aliyun">阿里云 (DirectMail)</Select.Option>
+                  <Select.Option value="tencent">腾讯云 (SES)</Select.Option>
+                </Select>
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="name" label="账号名称" rules={[{ required: true, message: '请输入账号名称' }]}>
+                <Input placeholder="例如：阿里云-华东账号" />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
+              <Form.Item name="from_alias" label="默认发件昵称">
+                <Input placeholder="例如：市场部" />
+              </Form.Item>
+            </Col>
+            <Col span={4}>
+              <Form.Item name="enabled" label="启用状态" valuePropName="checked">
+                <Switch checkedChildren="启用" unCheckedChildren="禁用" />
+              </Form.Item>
+            </Col>
+          </Row>
+
+          {accountProvider === 'aliyun' ? (
+            <Row gutter={16}>
+              <Col span={10}>
+                <Form.Item name="access_key_id" label="Aliyun Access Key ID" rules={[{ required: true, message: '请输入 Access Key ID' }]}>
+                  <Input />
+                </Form.Item>
+              </Col>
+              <Col span={10}>
+                <Form.Item name="access_key_secret" label="Aliyun Access Key Secret" rules={editingAccountId ? [] : [{ required: true, message: '请输入 Access Key Secret' }]}>
+                  <Input.Password placeholder={editingAccountId ? '留空表示不修改' : ''} />
+                </Form.Item>
+              </Col>
+              <Col span={4}>
+                <Form.Item name="region_id" label="区域 ID" initialValue="cn-hangzhou">
+                  <Input placeholder="cn-hangzhou" />
+                </Form.Item>
+              </Col>
+            </Row>
+          ) : (
+            <Row gutter={16}>
+              <Col span={10}>
+                <Form.Item name="tencent_secret_id" label="Tencent Secret ID" rules={[{ required: true, message: '请输入 Secret ID' }]}>
+                  <Input />
+                </Form.Item>
+              </Col>
+              <Col span={10}>
+                <Form.Item name="tencent_secret_key" label="Tencent Secret Key" rules={editingAccountId ? [] : [{ required: true, message: '请输入 Secret Key' }]}>
+                  <Input.Password placeholder={editingAccountId ? '留空表示不修改' : ''} />
+                </Form.Item>
+              </Col>
+              <Col span={4}>
+                <Form.Item name="tencent_region" label="区域" initialValue="ap-hongkong">
+                  <Input placeholder="ap-hongkong" />
+                </Form.Item>
+              </Col>
+            </Row>
+          )}
+
+          <Space>
+            <Button type="primary" onClick={onSubmitAccount}>{editingAccountId ? '更新账号' : '新增账号'}</Button>
+            {editingAccountId && <Button onClick={resetAccountForm}>取消编辑</Button>}
+          </Space>
+        </Form>
+
+        <Divider />
+        <Table dataSource={accounts} columns={accountColumns} rowKey="id" pagination={false} />
       </Card>
     </div>
   );
@@ -319,24 +485,51 @@ const Contacts = () => {
 
 const Templates = () => {
   const [templates, setTemplates] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [editingId, setEditingId] = useState(null);
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [filterProvider, setFilterProvider] = useState('local');
+  const [filterAccountId, setFilterAccountId] = useState(undefined);
   const [form] = Form.useForm();
   const [importForm] = Form.useForm();
+  const importProvider = Form.useWatch('provider', importForm) || 'aliyun';
 
-  const refresh = () => api.get('/templates').then(res => setTemplates(res.data));
-  useEffect(() => { refresh(); }, []);
+  const refresh = () => {
+    const params = {};
+    if (filterProvider) params.provider = filterProvider;
+    if (filterProvider !== 'local' && filterAccountId) {
+      params.account_id = filterAccountId;
+    }
+    api.get('/templates', { params }).then(res => setTemplates(res.data || []));
+  };
+
+  const refreshAccounts = () => {
+    accountApi.getAll().then(res => setAccounts(res.data || []));
+  };
+
+  useEffect(() => {
+    refreshAccounts();
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [filterProvider, filterAccountId]);
 
   const onFinish = (values) => {
+    const payload = {
+      ...values,
+      provider: 'local',
+      account_id: null,
+    };
     if (editingId) {
-        api.put(`/templates/${editingId}`, values).then(() => {
+        api.put(`/templates/${editingId}`, payload).then(() => {
             message.success('模板更新成功');
             setEditingId(null);
             form.resetFields();
             refresh();
         });
     } else {
-        api.post('/templates', values).then(() => {
+        api.post('/templates', payload).then(() => {
             message.success('模板创建成功');
             form.resetFields();
             refresh();
@@ -355,9 +548,17 @@ const Templates = () => {
   };
   
   const handleSync = async () => {
+    if (filterProvider === 'local') {
+      message.warning('本地模板无需同步云端');
+      return;
+    }
+    if (!filterAccountId) {
+      message.warning('请先选择要同步的账号');
+      return;
+    }
     message.loading({ content: '正在从云端同步...', key: 'syncing' });
     try {
-      const res = await api.post('/templates/sync');
+      const res = await api.post('/templates/sync', null, { params: { account_id: filterAccountId } });
       message.success({ content: res.data.message, key: 'syncing' });
       refresh();
     } catch (e) {
@@ -371,7 +572,8 @@ const Templates = () => {
           message.loading({ content: '正在导入...', key: 'importing' });
           const res = await api.post('/templates/import', {
               provider: values.provider,
-              template_id: values.template_id
+              template_id: values.template_id,
+              account_id: values.account_id,
           });
           message.success({ content: `成功导入: ${res.data.title}`, key: 'importing' });
           setIsImportModalOpen(false);
@@ -385,13 +587,23 @@ const Templates = () => {
   const columns = [
     { title: '模板名称', dataIndex: 'title', key: 'title' },
     { title: '来源', dataIndex: 'provider', key: 'provider', render: (t) => t === 'tencent' ? <Tag color="blue">腾讯云</Tag> : t === 'aliyun' ? <Tag color="orange">阿里云</Tag> : <Tag>本地</Tag> },
+    { title: '所属账号', dataIndex: 'account_name', key: 'account_name', render: (v) => v || '-' },
     { title: '云端ID', dataIndex: 'provider_id', key: 'pid', render: (t) => t || '-' },
     { title: '发送人名称', dataIndex: 'from_alias', key: 'alias' },
     { title: '邮件标题', dataIndex: 'subject', key: 'subject' },
     { title: '操作', key: 'action', render: (_, record) => (
-        <Button icon={<EditOutlined />} size="small" onClick={() => handleEdit(record)}>编辑</Button>
+        record.provider === 'local'
+          ? <Button icon={<EditOutlined />} size="small" onClick={() => handleEdit(record)}>编辑</Button>
+          : <span style={{ color: '#999' }}>云模板请在云端修改后同步</span>
     )}
   ];
+
+  const accountOptions = accounts
+    .filter(a => a.provider === filterProvider)
+    .map(a => ({ label: a.name, value: a.id }));
+  const importAccountOptions = accounts
+    .filter(a => a.provider === importProvider)
+    .map(a => ({ label: a.name, value: a.id }));
 
   return (
     <div style={{ display: 'flex', gap: 20 }}>
@@ -433,8 +645,31 @@ const Templates = () => {
       </Card>
       <Card title="已有模板" style={{ flex: 1 }} extra={
           <div style={{display: 'flex', gap: 10}}>
+            <Select
+              value={filterProvider}
+              style={{ width: 130 }}
+              onChange={(value) => {
+                setFilterProvider(value);
+                setFilterAccountId(undefined);
+              }}
+              options={[
+                { label: '本地', value: 'local' },
+                { label: '阿里云', value: 'aliyun' },
+                { label: '腾讯云', value: 'tencent' },
+              ]}
+            />
+            {filterProvider !== 'local' && (
+              <Select
+                value={filterAccountId}
+                placeholder="选择账号"
+                style={{ width: 180 }}
+                onChange={setFilterAccountId}
+                options={accountOptions}
+                allowClear
+              />
+            )}
             <Button onClick={() => setIsImportModalOpen(true)}>指定ID导入</Button>
-            <Button icon={<RocketOutlined />} onClick={handleSync}>同步云端模板</Button>
+            <Button icon={<RocketOutlined />} onClick={handleSync} disabled={filterProvider === 'local'}>同步云端模板</Button>
           </div>
       }>
         <Table dataSource={templates} columns={columns} rowKey="id" />
@@ -442,11 +677,14 @@ const Templates = () => {
 
       <Modal title="按 ID 导入模板" open={isImportModalOpen} onOk={handleImport} onCancel={() => setIsImportModalOpen(false)}>
           <Form form={importForm} layout="vertical">
-              <Form.Item name="provider" label="服务商" initialValue="tencent" required>
+              <Form.Item name="provider" label="服务商" initialValue="aliyun" required>
                   <Select>
-                      <Select.Option value="tencent">腾讯云 (SES)</Select.Option>
                       <Select.Option value="aliyun">阿里云 (DirectMail)</Select.Option>
+                      <Select.Option value="tencent">腾讯云 (SES)</Select.Option>
                   </Select>
+              </Form.Item>
+              <Form.Item name="account_id" label="云账号" required>
+                  <Select options={importAccountOptions} placeholder="请选择账号" />
               </Form.Item>
               <Form.Item name="template_id" label="模板 ID" required tooltip="请在腾讯云/阿里云控制台查找模板 ID (数字)">
                   <Input placeholder="例如：12345" />
@@ -461,17 +699,20 @@ const Campaigns = () => {
   const [campaigns, setCampaigns] = useState([]);
   const [lists, setLists] = useState([]);
   const [templates, setTemplates] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [senders, setSenders] = useState([]);
   const [savedReplyTos, setSavedReplyTos] = useState([]);
   const [newReplyTo, setNewReplyTo] = useState('');
   const [form] = Form.useForm();
   
   const selectedProvider = Form.useWatch('provider', form);
+  const selectedAccountId = Form.useWatch('account_id', form);
 
   const refresh = () => {
     api.get('/campaigns').then(res => setCampaigns(res.data));
     api.get('/contacts').then(res => setLists(res.data));
     api.get('/templates').then(res => setTemplates(res.data));
+    accountApi.getAll().then(res => setAccounts((res.data || []).filter(a => a.enabled)));
     settingsApi.getReplyTos().then(res => setSavedReplyTos(res.data || []));
   };
   
@@ -499,16 +740,30 @@ const Campaigns = () => {
     localStorage.setItem('campaign_draft', JSON.stringify(allValues));
   };
 
-  const loadSenders = () => {
-    api.get('/senders/sync').then(res => {
+  const loadSenders = (accountId) => {
+    if (!accountId) {
+      setSenders([]);
+      return;
+    }
+    api.get('/senders/sync', { params: { account_id: accountId } }).then(res => {
       setSenders(res.data.map(s => ({
-          label: s.label || `${s.email} (${s.provider})`, 
+          label: s.label || `${s.email} (${s.provider})`,
           value: s.email,
           provider: s.provider,
-          reply_address: s.reply_address
+          reply_address: s.reply_address,
+          account_id: s.account_id,
       })));
     }).catch(e => message.error('加载发信地址失败'));
   };
+
+  useEffect(() => {
+    if (selectedAccountId) {
+      loadSenders(selectedAccountId);
+    } else {
+      setSenders([]);
+      form.setFieldValue('account_name', null);
+    }
+  }, [selectedAccountId]);
 
   const handleAccountChange = (value) => {
       // 阿里云自动填充回信地址
@@ -563,6 +818,7 @@ const Campaigns = () => {
     const payload = {
       ...values,
       account_name: accName,
+      account_id: values.account_id ? parseInt(values.account_id, 10) : null,
       batch_size: parseInt(values.batch_size, 10),
       interval_minutes: parseInt(values.interval_minutes, 10),
       scheduled_start_time: values.scheduled_start_time ? values.scheduled_start_time.toISOString() : null
@@ -578,9 +834,19 @@ const Campaigns = () => {
   };
 
   const filteredSenders = senders.filter(s => !selectedProvider || s.provider === selectedProvider);
+  const accountOptions = accounts
+    .filter(a => !selectedProvider || a.provider === selectedProvider)
+    .map(a => ({ label: `${a.name} (${a.provider === 'aliyun' ? '阿里云' : '腾讯云'})`, value: a.id }));
+  const filteredTemplates = templates.filter(t => {
+    if (t.provider === 'local') return true;
+    if (!selectedProvider || t.provider !== selectedProvider) return false;
+    if (!selectedAccountId) return false;
+    return Number(t.account_id) === Number(selectedAccountId);
+  });
 
   const columns = [
     { title: '任务名称', dataIndex: 'name', key: 'name' },
+    { title: '账号', dataIndex: 'account_label', key: 'account_label', render: (v) => v || '(未绑定)' },
     { title: '发件人', dataIndex: 'from_alias', key: 'from', render: (t) => t || '(默认)' },
     { title: '服务商', dataIndex: 'provider', key: 'provider', render: (text) => text === 'tencent' ? '腾讯云' : '阿里云' },
     { title: '状态', dataIndex: 'status', key: 'status', render: (text) => {
@@ -618,7 +884,14 @@ const Campaigns = () => {
             </Col>
             <Col span={8}>
               <Form.Item name="provider" label="服务商" initialValue="aliyun" required>
-                <Select onChange={() => form.setFieldValue('account_name', null)}>
+                <Select onChange={() => {
+                  form.setFieldsValue({
+                    account_id: null,
+                    template_id: null,
+                    account_name: null,
+                    reply_to_address: null,
+                  });
+                }}>
                   <Select.Option value="aliyun">阿里云 (DirectMail)</Select.Option>
                   <Select.Option value="tencent">腾讯云 (SES)</Select.Option>
                 </Select>
@@ -630,19 +903,33 @@ const Campaigns = () => {
           </Row>
           
           <Row gutter={16}>
-            <Col span={8}>
-              <Form.Item name="template_id" label="选择模板" required><Select placeholder="请选择" options={templates.map(t => ({label: t.title, value: t.id}))} /></Form.Item>
+            <Col span={6}>
+              <Form.Item name="account_id" label="云账号" required>
+                <Select
+                  placeholder="请选择账号"
+                  options={accountOptions}
+                  onChange={() => form.setFieldsValue({ template_id: null, account_name: null, reply_to_address: null })}
+                />
+              </Form.Item>
             </Col>
-            <Col span={8}>
+            <Col span={6}>
+              <Form.Item name="template_id" label="选择模板" required>
+                <Select
+                  placeholder="请选择"
+                  options={filteredTemplates.map(t => ({ label: `${t.title}${t.account_name ? ` [${t.account_name}]` : ''}`, value: t.id }))}
+                />
+              </Form.Item>
+            </Col>
+            <Col span={6}>
               <Form.Item name="list_id" label="选择联系人列表" required><Select placeholder="请选择" options={lists.map(l => ({label: l.name, value: l.id}))} /></Form.Item>
             </Col>
-            <Col span={8}>
+            <Col span={6}>
               <Form.Item name="account_name" label="发信地址" required>
                 <Select 
                   placeholder={selectedProvider === 'tencent' ? "请选择腾讯云域名" : "请选择阿里云发信地址"}
                   mode="tags" 
                   maxCount={1}
-                  onOpenChange={(open) => open && loadSenders()}
+                  onOpenChange={(open) => open && loadSenders(selectedAccountId)}
                   onChange={handleAccountChange}
                   options={filteredSenders}
                 />

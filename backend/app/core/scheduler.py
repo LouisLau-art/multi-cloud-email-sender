@@ -15,6 +15,7 @@ import uuid
 import urllib.parse
 import html
 from threading import Lock
+from types import SimpleNamespace
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -28,7 +29,7 @@ TRACKABLE_HREF_PATTERN = re.compile(
 ANCHOR_BLOCK_PATTERN = re.compile(r"(?is)<a\b[^>]*>.*?</a>")
 HTML_TAG_PATTERN = re.compile(r"(?is)<[^>]+>")
 PLAIN_TEXT_LINK_PATTERN = re.compile(
-    r"(?P<url>(?:https?://|www\.)[^\s<>\"]+)|(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})",
+    r"(?P<url>(?:https?://|www\.)[A-Z0-9\-._~:/?#\[\]@!$&'()*+,;=%]+)|(?P<email>[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})",
     re.IGNORECASE,
 )
 TRAILING_LINK_PUNCTUATION = ".,;:!?)]}>，。；：！？）】》"
@@ -36,6 +37,78 @@ TRAILING_LINK_PUNCTUATION = ".,;:!?)]}>，。；：！？）】》"
 
 def get_db_session():
     return SessionLocal()
+
+
+def _legacy_account_from_setting(setting, provider: str):
+    if not setting:
+        return None
+    if provider == "aliyun" and setting.access_key_id and setting.access_key_secret:
+        return SimpleNamespace(
+            id=None,
+            provider="aliyun",
+            name="legacy-aliyun",
+            access_key_id=setting.access_key_id,
+            access_key_secret=setting.access_key_secret,
+            region_id=setting.region_id or "cn-hangzhou",
+            from_alias=setting.from_alias,
+            enabled=True,
+        )
+    if (
+        provider == "tencent"
+        and setting.tencent_secret_id
+        and setting.tencent_secret_key
+    ):
+        return SimpleNamespace(
+            id=None,
+            provider="tencent",
+            name="legacy-tencent",
+            tencent_secret_id=setting.tencent_secret_id,
+            tencent_secret_key=setting.tencent_secret_key,
+            tencent_region=setting.tencent_region or "ap-hongkong",
+            from_alias=setting.from_alias,
+            enabled=True,
+        )
+    return None
+
+
+def _resolve_campaign_account(db: Session, campaign, setting):
+    provider = (campaign.provider or "").lower().strip()
+    if provider not in {"aliyun", "tencent"}:
+        return None, f"Unsupported provider: {campaign.provider}"
+
+    if campaign.account_id:
+        account = (
+            db.query(models.CloudAccount)
+            .filter(models.CloudAccount.id == campaign.account_id)
+            .first()
+        )
+        if not account:
+            return None, f"Cloud account not found: id={campaign.account_id}"
+        if account.provider != provider:
+            return None, "Campaign provider/account mismatch"
+        if not account.enabled:
+            return None, f"Cloud account disabled: id={campaign.account_id}"
+        return account, None
+
+    # Backward-compatible fallback for old campaigns.
+    accounts = (
+        db.query(models.CloudAccount)
+        .filter(
+            models.CloudAccount.provider == provider,
+            models.CloudAccount.enabled.isnot(False),
+        )
+        .order_by(models.CloudAccount.id.asc())
+        .all()
+    )
+    if len(accounts) == 1:
+        return accounts[0], None
+    if len(accounts) > 1:
+        return None, "Multiple cloud accounts found; campaign.account_id is required"
+
+    legacy = _legacy_account_from_setting(setting, provider)
+    if legacy:
+        return legacy, None
+    return None, "Cloud account not configured"
 
 
 def _split_trailing_punctuation(value: str):
@@ -131,7 +204,9 @@ def send_campaign_batch():
         for campaign in active_campaigns:
             setting = db.query(models.Setting).first()
             if not setting:
-                continue
+                setting = SimpleNamespace(
+                    track_domain="http://192.168.2.8:8000", from_alias=None
+                )
 
             template = (
                 db.query(models.EmailTemplate)
@@ -153,6 +228,54 @@ def send_campaign_batch():
                 )
                 db.commit()
                 continue
+
+            account, account_err = _resolve_campaign_account(db, campaign, setting)
+            if account_err:
+                logger.error(f"Campaign {campaign.id} failed: {account_err}")
+                campaign.status = "error"
+                db.add(
+                    models.CampaignBatch(
+                        campaign_id=campaign.id,
+                        status="error",
+                        recipient_count=0,
+                        error_message=account_err,
+                        sent_at=datetime.utcnow(),
+                    )
+                )
+                db.commit()
+                continue
+
+            if template.provider in {"aliyun", "tencent"}:
+                if template.provider != campaign.provider:
+                    err_msg = "Template/provider/account mismatch"
+                    logger.error(f"Campaign {campaign.id} failed: {err_msg}")
+                    campaign.status = "error"
+                    db.add(
+                        models.CampaignBatch(
+                            campaign_id=campaign.id,
+                            status="error",
+                            recipient_count=0,
+                            error_message=err_msg,
+                            sent_at=datetime.utcnow(),
+                        )
+                    )
+                    db.commit()
+                    continue
+                if template.account_id and account.id and template.account_id != account.id:
+                    err_msg = "Template/provider/account mismatch"
+                    logger.error(f"Campaign {campaign.id} failed: {err_msg}")
+                    campaign.status = "error"
+                    db.add(
+                        models.CampaignBatch(
+                            campaign_id=campaign.id,
+                            status="error",
+                            recipient_count=0,
+                            error_message=err_msg,
+                            sent_at=datetime.utcnow(),
+                        )
+                    )
+                    db.commit()
+                    continue
 
             # 闂傛挳娈уΛ鈧弻?
             last_batch = (
@@ -190,7 +313,7 @@ def send_campaign_batch():
             ali_client = None
             if campaign.provider == "aliyun":
                 ali_client = AliyunService.create_client(
-                    setting.access_key_id, setting.access_key_secret, setting.region_id
+                    account.access_key_id, account.access_key_secret, account.region_id
                 )
 
             for i, contact in enumerate(contacts):
@@ -233,6 +356,7 @@ def send_campaign_batch():
                 real_from_alias = (
                     campaign.from_alias
                     or template.from_alias
+                    or account.from_alias
                     or setting.from_alias
                     or campaign.account_name.split("@")[0]
                 )
@@ -264,9 +388,9 @@ def send_campaign_batch():
                             # 閼垫崘顔嗘禍鎴災侀弶鎸幠佸?                            # 鐏忔繆鐦▔銊ュ弳 pixel 閸掓澘褰夐柌蹇庤厬閿涘苯顩ч弸婊勀侀弶鎸庢暜閹?{{tracking_pixel}}
                             # 娴ｅ棗銇囨径姘殶閺冭泛鈧瑦膩閺夊じ绗夐弨顖涘瘮閿涘本澧嶆禒銉δ侀弶鎸幠佸蹇曟畱鏉╁€熼嚋濮ｆ棁绶濋崶浼存閿涘矂娅庨棃鐐茨侀弶鍧楀櫡妫板嫮鏆€娴滃棔缍呯純?                            # 鏉╂瑩鍣烽弳鍌涙鐠哄疇绻冨Ο鈩冩緲濡€崇础閻ㄥ嫬鍎氱槐鐘虫暈閸忋儻绱濋幋鏍偓鍛矌娴犲懍绶风挧?send_mail 閹存劕濮?
                             tencent_response = TencentService.send_mail(
-                                setting.tencent_secret_id,
-                                setting.tencent_secret_key,
-                                setting.tencent_region,
+                                account.tencent_secret_id,
+                                account.tencent_secret_key,
+                                account.tencent_region,
                                 campaign.account_name,
                                 clean_to_address,
                                 subject,
@@ -320,9 +444,9 @@ def send_campaign_batch():
                                     )
 
                             tencent_response = TencentService.send_mail(
-                                setting.tencent_secret_id,
-                                setting.tencent_secret_key,
-                                setting.tencent_region,
+                                account.tencent_secret_id,
+                                account.tencent_secret_key,
+                                account.tencent_region,
                                 campaign.account_name,
                                 clean_to_address,
                                 subject,
@@ -437,151 +561,192 @@ def pull_email_tracking_status():
     """
     db = get_db_session()
     try:
-        setting = db.query(models.Setting).first()
-        if (
-            not setting
-            or not setting.tencent_secret_id
-            or not setting.tencent_secret_key
-        ):
-            return  # 濞屸剝婀侀柊宥囩枂閼垫崘顔嗘禍鎴礉鐠哄疇绻?
-        # 閺屻儴顕楅張鈧潻?7 婢垛晛鍞村鍛倱濮濄儳娈戦懙鎹愵唵娴滄垶鏁规禒鏈垫眽
-        from datetime import timedelta
-
-        seven_days_ago = datetime.utcnow() - timedelta(days=7)
-        unresolved_filters = (
-            models.CampaignRecipient.provider == "tencent",
-            models.CampaignRecipient.message_id.isnot(None),
-            models.CampaignRecipient.sent_at >= seven_days_ago,
-            # 娴犲秹娓剁憰浣芥嫹闊亝娲块弬鎵畱鐠佹澘缍嶉敍姝磂nt/opened閿涘潏licked 鐟欏棔璐熺紒鍫熲偓渚婄礆
-            models.CampaignRecipient.status.in_(["sent", "opened"]),
-        )
-
-        pending_count = (
-            db.query(models.CampaignRecipient)
-            .filter(*unresolved_filters)
-            .count()
-        )
-        if pending_count == 0:
-            return
-
-        logger.info(f"[Pull Tracking] Pending Tencent recipients: {pending_count}")
-
-        # 娴犲懏濯洪崣鏍х摠閸︺劍婀€瑰本鍨氭潻鍊熼嚋鐠佹澘缍嶉惃鍕）閺堢噦绱濋崙蹇撶毌閺冪姵鏅?API 閺屻儴顕?
-        pending_dates = (
-            db.query(func.date(models.CampaignRecipient.sent_at))
-            .filter(*unresolved_filters)
-            .distinct()
+        tencent_accounts = (
+            db.query(models.CloudAccount)
+            .filter(
+                models.CloudAccount.provider == "tencent",
+                models.CloudAccount.enabled.isnot(False),
+                models.CloudAccount.tencent_secret_id.isnot(None),
+                models.CloudAccount.tencent_secret_key.isnot(None),
+            )
+            .order_by(models.CloudAccount.id.asc())
             .all()
         )
 
+        # Backward-compatible fallback for legacy single-account settings.
+        if not tencent_accounts:
+            setting = db.query(models.Setting).first()
+            legacy = _legacy_account_from_setting(setting, "tencent")
+            if not legacy:
+                return
+            tencent_accounts = [legacy]
+
+        from datetime import timedelta
+
+        seven_days_ago = datetime.utcnow() - timedelta(days=7)
         total_updated = 0
-        per_page_limit = 100
-        max_pages_per_date = 50
+        for account in tencent_accounts:
+            account_name = getattr(account, "name", "legacy-tencent")
+            account_id = getattr(account, "id", None)
+            secret_id = getattr(account, "tencent_secret_id", None)
+            secret_key = getattr(account, "tencent_secret_key", None)
+            region = getattr(account, "tencent_region", "ap-hongkong") or "ap-hongkong"
 
-        for (date_str,) in pending_dates:
-            if not date_str:
+            unresolved_filters = (
+                models.CampaignRecipient.provider == "tencent",
+                models.CampaignRecipient.message_id.isnot(None),
+                models.CampaignRecipient.sent_at >= seven_days_ago,
+                models.CampaignRecipient.status.in_(["sent", "opened"]),
+                models.Campaign.provider == "tencent",
+            )
+
+            pending_query = db.query(models.CampaignRecipient).join(
+                models.Campaign,
+                models.Campaign.id == models.CampaignRecipient.campaign_id,
+            )
+            if account_id is not None:
+                pending_query = pending_query.filter(models.Campaign.account_id == account_id)
+            else:
+                pending_query = pending_query.filter(models.Campaign.account_id.is_(None))
+            pending_query = pending_query.filter(*unresolved_filters)
+
+            pending_count = pending_query.count()
+            if pending_count == 0:
                 continue
-            try:
-                date_recipients = (
-                    db.query(models.CampaignRecipient)
-                    .filter(*unresolved_filters, func.date(models.CampaignRecipient.sent_at) == date_str)
-                    .all()
+
+            logger.info(
+                f"[Pull Tracking] Account={account_name}, pending recipients={pending_count}"
+            )
+
+            pending_dates = (
+                db.query(func.date(models.CampaignRecipient.sent_at))
+                .join(
+                    models.Campaign,
+                    models.Campaign.id == models.CampaignRecipient.campaign_id,
                 )
-                if not date_recipients:
+                .filter(*unresolved_filters)
+            )
+            if account_id is not None:
+                pending_dates = pending_dates.filter(models.Campaign.account_id == account_id)
+            else:
+                pending_dates = pending_dates.filter(models.Campaign.account_id.is_(None))
+            pending_dates = pending_dates.distinct().all()
+
+            per_page_limit = 100
+            max_pages_per_date = 50
+
+            for (date_str,) in pending_dates:
+                if not date_str:
                     continue
+                try:
+                    date_query = (
+                        db.query(models.CampaignRecipient)
+                        .join(
+                            models.Campaign,
+                            models.Campaign.id == models.CampaignRecipient.campaign_id,
+                        )
+                        .filter(
+                            *unresolved_filters,
+                            func.date(models.CampaignRecipient.sent_at) == date_str,
+                        )
+                    )
+                    if account_id is not None:
+                        date_query = date_query.filter(models.Campaign.account_id == account_id)
+                    else:
+                        date_query = date_query.filter(models.Campaign.account_id.is_(None))
 
-                # MessageId -> recipient
-                date_recipient_map = {
-                    r.message_id: r for r in date_recipients if r.message_id
-                }
-                if not date_recipient_map:
-                    continue
+                    date_recipients = date_query.all()
+                    if not date_recipients:
+                        continue
 
-                logger.info(
-                    f"[Pull Tracking] Syncing date={date_str}, unresolved={len(date_recipient_map)}"
-                )
+                    date_recipient_map = {
+                        r.message_id: r for r in date_recipients if r.message_id
+                    }
+                    if not date_recipient_map:
+                        continue
 
-                offset = 0
-                pages = 0
-                date_updated = 0
-
-                while pages < max_pages_per_date:
-                    response = TencentService.get_send_email_status(
-                        setting.tencent_secret_id,
-                        setting.tencent_secret_key,
-                        setting.tencent_region or "ap-hongkong",
-                        date_str,
-                        offset=offset,
-                        limit=per_page_limit,
+                    logger.info(
+                        f"[Pull Tracking] Account={account_name}, date={date_str}, unresolved={len(date_recipient_map)}"
                     )
 
-                    status_list = (
-                        list(response.EmailStatusList)
-                        if response and response.EmailStatusList
-                        else []
-                    )
-                    if not status_list:
-                        break
+                    offset = 0
+                    pages = 0
+                    date_updated = 0
 
-                    page_updated = 0
-                    for cloud_status in status_list:
-                        message_id = getattr(cloud_status, "MessageId", None)
-                        if not message_id:
-                            continue
-                        recipient = date_recipient_map.get(message_id)
-                        if not recipient:
-                            continue
+                    while pages < max_pages_per_date:
+                        response = TencentService.get_send_email_status(
+                            secret_id,
+                            secret_key,
+                            region,
+                            date_str,
+                            offset=offset,
+                            limit=per_page_limit,
+                        )
 
-                        updated = False
-                        now = datetime.utcnow()
-                        user_opened = bool(getattr(cloud_status, "UserOpened", False))
-                        user_clicked = bool(getattr(cloud_status, "UserClicked", False))
+                        status_list = (
+                            list(response.EmailStatusList)
+                            if response and response.EmailStatusList
+                            else []
+                        )
+                        if not status_list:
+                            break
 
-                        # 閹垫挸绱戦敍姘涧鐠佹澘缍嶆＃鏍﹂嚋閹垫挸绱戦弮鍫曟？
-                        if user_opened and not recipient.opened_at:
-                            recipient.opened_at = now
-                            updated = True
-                            if recipient.status == "sent":
-                                recipient.status = "opened"
+                        page_updated = 0
+                        for cloud_status in status_list:
+                            message_id = getattr(cloud_status, "MessageId", None)
+                            if not message_id:
+                                continue
+                            recipient = date_recipient_map.get(message_id)
+                            if not recipient:
+                                continue
 
-                        # 閻愮懓鍤敍姘卞仯閸戣绱崗鍫㈤獓妤傛ü绨幍鎾崇磻
-                        if user_clicked:
-                            if not recipient.clicked_at:
-                                recipient.clicked_at = now
-                                updated = True
-                            if not recipient.opened_at:
+                            updated = False
+                            now = datetime.utcnow()
+                            user_opened = bool(getattr(cloud_status, "UserOpened", False))
+                            user_clicked = bool(getattr(cloud_status, "UserClicked", False))
+
+                            if user_opened and not recipient.opened_at:
                                 recipient.opened_at = now
                                 updated = True
-                            if recipient.status != "clicked":
-                                recipient.status = "clicked"
-                                updated = True
-                            # clicked 鐟欏棔璐熺紒鍫熲偓渚婄礉闁灝鍘ら崥搴ｇ敾闁插秴顦插Λ鈧弻?
-                            date_recipient_map.pop(message_id, None)
+                                if recipient.status == "sent":
+                                    recipient.status = "opened"
 
-                        if updated:
-                            page_updated += 1
+                            if user_clicked:
+                                if not recipient.clicked_at:
+                                    recipient.clicked_at = now
+                                    updated = True
+                                if not recipient.opened_at:
+                                    recipient.opened_at = now
+                                    updated = True
+                                if recipient.status != "clicked":
+                                    recipient.status = "clicked"
+                                    updated = True
+                                date_recipient_map.pop(message_id, None)
 
-                    if page_updated:
-                        db.commit()
-                        date_updated += page_updated
+                            if updated:
+                                page_updated += 1
 
-                    if len(status_list) < per_page_limit:
-                        break
+                        if page_updated:
+                            db.commit()
+                            date_updated += page_updated
 
-                    offset += per_page_limit
-                    pages += 1
+                        if len(status_list) < per_page_limit:
+                            break
 
-                if date_updated:
-                    logger.info(
-                        f"[Pull Tracking] date={date_str} updated={date_updated}"
+                        offset += per_page_limit
+                        pages += 1
+
+                    if date_updated:
+                        logger.info(
+                            f"[Pull Tracking] Account={account_name}, date={date_str}, updated={date_updated}"
+                        )
+                        total_updated += date_updated
+
+                except Exception as e:
+                    logger.error(
+                        f"[Pull Tracking] Error fetching status for {date_str} ({account_name}): {e}"
                     )
-                    total_updated += date_updated
-
-            except Exception as e:
-                logger.error(
-                    f"[Pull Tracking] Error fetching status for {date_str}: {e}"
-                )
-                continue
+                    continue
 
         if total_updated:
             logger.info(f"[Pull Tracking] Total updated recipients: {total_updated}")

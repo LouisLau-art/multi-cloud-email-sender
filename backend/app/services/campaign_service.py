@@ -1,5 +1,6 @@
 from sqlalchemy.orm import Session
-from ..models.models import ContactList, Contact, Campaign
+from fastapi import HTTPException
+from ..models.models import ContactList, Contact, Campaign, EmailTemplate, CloudAccount
 from datetime import datetime
 import pandas as pd
 import io
@@ -254,17 +255,51 @@ class CampaignService:
         scheduled_start_time: datetime = None,
         from_alias: str = None,
         provider: str = "aliyun",
+        account_id: int = None,
         reply_to_address: str = None,
         track_opens: bool = True,
         track_clicks: bool = True,
     ):
+        provider = (provider or "").lower().strip() or "aliyun"
+
+        template = db.query(EmailTemplate).filter(EmailTemplate.id == template_id).first()
+        if not template:
+            raise HTTPException(status_code=400, detail="Template not found")
+
         # Fetch contact list count
         contact_list = db.query(ContactList).filter(ContactList.id == list_id).first()
-        total_recipients = contact_list.total_count if contact_list else 0
+        if not contact_list:
+            raise HTTPException(status_code=400, detail="Contact list not found")
+        total_recipients = contact_list.total_count
+
+        account = None
+        if provider in {"aliyun", "tencent"} and account_id:
+            account = db.query(CloudAccount).filter(CloudAccount.id == account_id).first()
+            if not account:
+                raise HTTPException(status_code=400, detail="Cloud account not found")
+            if account.provider != provider:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Template/provider/account mismatch",
+                )
+
+        # Prevent cross-account mismatch: cloud template must match selected account/provider.
+        if template.provider in {"aliyun", "tencent"}:
+            if template.provider != provider:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Template/provider/account mismatch",
+                )
+            if account_id and template.account_id and template.account_id != account_id:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Template/provider/account mismatch",
+                )
 
         campaign = Campaign(
             name=name,
             provider=provider,
+            account_id=account_id,
             template_id=template_id,
             list_id=list_id,
             account_name=account_name,

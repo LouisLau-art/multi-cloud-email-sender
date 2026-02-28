@@ -57,6 +57,13 @@ export const settingsApi = {
     addReplyTo: (address) => api.post('/settings/reply_tos', { address }),
 };
 
+export const accountApi = {
+    getAll: (provider) => api.get('/accounts', { params: provider ? { provider } : {} }),
+    create: (data) => api.post('/accounts', data),
+    update: (id, data) => api.put(`/accounts/${id}`, data),
+    delete: (id) => api.delete(`/accounts/${id}`),
+};
+
 export const dashboardApi = {
     getStats: () => api.get('/dashboard/stats'),
     getChartData: (days) => api.get('/dashboard/chart', { params: { days } }),

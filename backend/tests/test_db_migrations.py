@@ -22,6 +22,31 @@ def _create_legacy_schema(engine):
         )
         conn.execute(
             text(
+                "INSERT INTO settings ("
+                "id, access_key_id, access_key_secret, region_id, "
+                "tencent_secret_id, tencent_secret_key, tencent_region, from_alias"
+                ") VALUES ("
+                "1, 'ali_legacy_id', 'ali_legacy_secret', 'cn-hangzhou', "
+                "'tx_legacy_id', 'tx_legacy_secret', 'ap-hongkong', 'LegacyAlias'"
+                ")"
+            )
+        )
+        conn.execute(
+            text(
+                "CREATE TABLE templates ("
+                "id INTEGER PRIMARY KEY, "
+                "title VARCHAR, "
+                "subject VARCHAR, "
+                "body TEXT, "
+                "from_alias VARCHAR, "
+                "provider VARCHAR, "
+                "provider_id VARCHAR, "
+                "created_at DATETIME"
+                ")"
+            )
+        )
+        conn.execute(
+            text(
                 "CREATE TABLE campaigns ("
                 "id INTEGER PRIMARY KEY, "
                 "name VARCHAR, "
@@ -66,6 +91,13 @@ def _create_legacy_schema(engine):
                 "VALUES (1, 'legacy-campaign', 'aliyun', 'pending')"
             )
         )
+        conn.execute(
+            text(
+                "INSERT INTO templates "
+                "(id, title, subject, body, provider, provider_id) "
+                "VALUES (1, 'legacy-template', 's', 'b', 'aliyun', '1001')"
+            )
+        )
 
 
 def _column_names(conn, table_name):
@@ -84,11 +116,14 @@ def test_startup_migration_upgrades_legacy_sqlite_schema(tmp_path):
     with engine.connect() as conn:
         settings_cols = _column_names(conn, "settings")
         campaign_cols = _column_names(conn, "campaigns")
+        template_cols = _column_names(conn, "templates")
         recipient_cols = _column_names(conn, "campaign_recipients")
 
         assert "track_domain" in settings_cols
         assert "track_opens" in campaign_cols
         assert "track_clicks" in campaign_cols
+        assert "account_id" in campaign_cols
+        assert "account_id" in template_cols
         assert "message_id" in recipient_cols
         assert "provider" in recipient_cols
 
@@ -105,3 +140,28 @@ def test_startup_migration_upgrades_legacy_sqlite_schema(tmp_path):
             )
         ).fetchone()
         assert link_table_exists is not None
+
+        cloud_accounts_exists = conn.execute(
+            text(
+                "SELECT 1 FROM sqlite_master "
+                "WHERE type='table' AND name='cloud_accounts'"
+            )
+        ).fetchone()
+        assert cloud_accounts_exists is not None
+
+        aliyun_account_id = conn.execute(
+            text(
+                "SELECT id FROM cloud_accounts "
+                "WHERE provider='aliyun' AND access_key_id='ali_legacy_id' LIMIT 1"
+            )
+        ).fetchone()
+        assert aliyun_account_id is not None
+
+        campaign_account_id = conn.execute(
+            text("SELECT account_id FROM campaigns WHERE id=1")
+        ).fetchone()[0]
+        template_account_id = conn.execute(
+            text("SELECT account_id FROM templates WHERE id=1")
+        ).fetchone()[0]
+        assert campaign_account_id == aliyun_account_id[0]
+        assert template_account_id == aliyun_account_id[0]
