@@ -1,10 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal, Tabs, Divider, Space, Radio, Empty, Switch, InputNumber, Spin } from 'antd';
+import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal, Tabs, Divider, Space, Radio, Empty, Switch, InputNumber } from 'antd';
 import { UploadOutlined, UserOutlined, MailOutlined, SettingOutlined, RocketOutlined, EditOutlined, DeleteOutlined, PlusOutlined, PieChartOutlined, CheckCircleOutlined, SyncOutlined, CloseCircleOutlined, EyeOutlined, DownloadOutlined } from '@ant-design/icons';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, Legend, ResponsiveContainer } from 'recharts';
 import DOMPurify from 'dompurify';
-import api, { authApi, contactApi, settingsApi, dashboardApi, accountApi } from './services/api';
+import api, { contactApi, settingsApi, dashboardApi, accountApi } from './services/api';
 import dayjs from 'dayjs';
 
 const { Header, Content, Sider } = Layout;
@@ -1152,104 +1152,9 @@ const Campaigns = () => {
 const App = () => {
   const navigate = useNavigate();
   const location = useLocation();
-  const [authStatus, setAuthStatus] = useState({
-    loading: true,
-    authenticated: false,
-    bootstrap_required: false,
-    auth_enabled: true,
-  });
-  const [authSubmitting, setAuthSubmitting] = useState(false);
-  const [authForm] = Form.useForm();
   const {
     token: { colorBgContainer },
   } = theme.useToken();
-
-  const refreshAuthStatus = () => {
-    authApi.status()
-      .then((res) => {
-        setAuthStatus({
-          loading: false,
-          authenticated: !!res.data?.authenticated,
-          bootstrap_required: !!res.data?.bootstrap_required,
-          auth_enabled: res.data?.auth_enabled !== false,
-        });
-      })
-      .catch(() => {
-        setAuthStatus({
-          loading: false,
-          authenticated: false,
-          bootstrap_required: true,
-        });
-      });
-  };
-
-  useEffect(() => {
-    refreshAuthStatus();
-  }, []);
-
-  const handleAuthSubmit = async () => {
-    try {
-      const values = await authForm.validateFields();
-      setAuthSubmitting(true);
-      if (authStatus.bootstrap_required) {
-        await authApi.bootstrap(values.password);
-        message.success('管理员密码设置成功');
-      } else {
-        await authApi.login(values.password);
-        message.success('登录成功');
-      }
-      authForm.resetFields();
-      refreshAuthStatus();
-    } catch (e) {
-      if (e?.errorFields) return;
-      message.error(e.response?.data?.detail || '认证失败');
-    } finally {
-      setAuthSubmitting(false);
-    }
-  };
-
-  const handleLogout = async () => {
-    try {
-      await authApi.logout();
-    } finally {
-      refreshAuthStatus();
-    }
-  };
-
-  if (authStatus.loading) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-        <Spin size="large" />
-      </div>
-    );
-  }
-
-  if (!authStatus.authenticated) {
-    return (
-      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f5f5', padding: 16 }}>
-        <Card
-          title={authStatus.bootstrap_required ? '首次初始化管理员密码' : '管理员登录'}
-          style={{ width: 420, maxWidth: '100%' }}
-        >
-          <Form form={authForm} layout="vertical" onFinish={handleAuthSubmit}>
-            <Form.Item
-              name="password"
-              label="密码"
-              rules={[
-                { required: true, message: '请输入密码' },
-                { min: 8, message: '密码至少 8 位' },
-              ]}
-            >
-              <Input.Password placeholder="请输入管理员密码" />
-            </Form.Item>
-            <Button type="primary" htmlType="submit" loading={authSubmitting} block>
-              {authStatus.bootstrap_required ? '初始化并进入系统' : '登录'}
-            </Button>
-          </Form>
-        </Card>
-      </div>
-    );
-  }
 
   const menuItems = [
     { key: '/', icon: <PieChartOutlined />, label: '数据看板' }, // Changed to Dashboard
@@ -1267,7 +1172,7 @@ const App = () => {
       </Sider>
       <Layout>
         <Header style={{ padding: '0 16px', background: colorBgContainer, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
-          {authStatus.auth_enabled ? <Button onClick={handleLogout}>退出登录</Button> : null}
+          {/* 登录已移除，保留页头区域用于后续扩展 */}
         </Header>
         <Content style={{ margin: '16px' }}>
           <Routes>

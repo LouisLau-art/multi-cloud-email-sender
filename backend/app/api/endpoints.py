@@ -1,7 +1,6 @@
 import base64
 import json
 import logging
-import os
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Optional
@@ -38,12 +37,8 @@ from ..services.aliyun_service import AliyunService
 from ..services.campaign_service import CampaignService, ContactService
 
 logger = logging.getLogger(__name__)
-AUTH_ENABLED = os.getenv("ENABLE_ADMIN_AUTH", "0").strip().lower() in (
-    "1",
-    "true",
-    "yes",
-    "on",
-)
+# Admin auth is disabled for this deployment: UI opens directly without login.
+AUTH_ENABLED = False
 
 public_router = APIRouter()
 
