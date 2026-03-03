@@ -10,6 +10,7 @@ echo ==========================================
 echo      Email Sender Start (Windows)
 echo ==========================================
 
+set "SCRIPT_NAME=%~n0"
 set "ROOT_DIR=%~dp0"
 if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
 set "LOG_DIR=%ROOT_DIR%\logs"
@@ -56,9 +57,9 @@ goto ParseArgs
 
 :ArgsDone
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
-type nul >> "%BACKEND_LOG%"
-type nul >> "%FRONTEND_LOG%"
-type nul >> "%TUNNEL_LOG%"
+if not exist "%BACKEND_LOG%" type nul > "%BACKEND_LOG%"
+if not exist "%FRONTEND_LOG%" type nul > "%FRONTEND_LOG%"
+if not exist "%TUNNEL_LOG%" type nul > "%TUNNEL_LOG%"
 echo ===== [%date% %time%] start.bat invoked =====>>"%BACKEND_LOG%"
 echo ===== [%date% %time%] start.bat invoked =====>>"%FRONTEND_LOG%"
 echo ===== [%date% %time%] start.bat invoked =====>>"%TUNNEL_LOG%"
@@ -184,7 +185,7 @@ echo   %FRONTEND_LOG%
 if "%ENABLE_QUICK_TUNNEL%"=="1" echo   %TUNNEL_LOG%
 echo.
 echo Stop command:
-echo   %~n0 -s
+echo   %SCRIPT_NAME% -s
 echo.
 
 if "%DAEMON_MODE%"=="1" (
@@ -196,7 +197,7 @@ echo Foreground log view enabled. Press Ctrl+C to stop log follow.
 powershell -NoProfile -Command "Get-Content -Path '%BACKEND_LOG%','%FRONTEND_LOG%' -Tail 80 -Wait"
 echo.
 echo Log follow stopped. Services are still running.
-echo Use %~n0 -s to stop services.
+echo Use %SCRIPT_NAME% -s to stop services.
 pause
 exit /b 0
 
@@ -267,7 +268,7 @@ exit /b 0
 
 :EnsurePortFree
 set "PORT=%~1"
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"') do (
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$p = Get-NetTCPConnection -State Listen -LocalPort %PORT% -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess; if($p){$p}"`) do (
     echo [ERROR] Port %PORT% is in use by PID %%P.
     exit /b 1
 )
@@ -280,7 +281,7 @@ set "SERVICE_LOG=%~3"
 set /a COUNT=0
 
 :WaitForPortLoop
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"') do (
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$p = Get-NetTCPConnection -State Listen -LocalPort %PORT% -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess; if($p){$p}"`) do (
     exit /b 0
 )
 
@@ -297,7 +298,7 @@ goto :WaitForPortLoop
 
 :KillPort
 set "PORT=%~1"
-for /f "tokens=5" %%P in ('netstat -ano ^| findstr /R /C:":%PORT% .*LISTENING"') do (
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "Get-NetTCPConnection -State Listen -LocalPort %PORT% -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique"`) do (
     echo [INFO] Killing PID %%P on port %PORT%.
     taskkill /F /PID %%P >nul 2>&1
 )
