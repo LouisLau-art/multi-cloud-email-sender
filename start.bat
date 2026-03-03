@@ -96,13 +96,20 @@ if not exist "%BACKEND_PY%" (
     )
 )
 
-"%BACKEND_PY%" -c "import uvicorn,sys; sys.exit(0 if hasattr(uvicorn,'run') else 1)" >nul 2>&1
+"%BACKEND_PY%" -c "import sys; import uvicorn, fastapi, sqlalchemy, itsdangerous; sys.exit(0 if hasattr(uvicorn,'run') else 1)" >nul 2>&1
 if errorlevel 1 (
-    echo [Setup] Installing backend dependencies...
-    "%BACKEND_PY%" -m pip install --upgrade pip >nul 2>&1
+    echo [Setup] Installing/repairing backend dependencies...
+    "%BACKEND_PY%" -m pip install --upgrade pip
     "%BACKEND_PY%" -m pip install -r "%ROOT_DIR%\backend\requirements.txt"
     if errorlevel 1 (
         echo [ERROR] Failed to install backend dependencies.
+        pause
+        exit /b 1
+    )
+    "%BACKEND_PY%" -c "import sys; import uvicorn, fastapi, sqlalchemy, itsdangerous; sys.exit(0 if hasattr(uvicorn,'run') else 1)" >nul 2>&1
+    if errorlevel 1 (
+        echo [ERROR] Backend dependencies are still incomplete after installation.
+        echo [ERROR] Please verify Python permissions/network and rerun start.bat.
         pause
         exit /b 1
     )

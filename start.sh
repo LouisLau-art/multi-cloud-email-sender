@@ -70,10 +70,13 @@ resolve_backend_python() {
 check_backend_runtime() {
     "$BACKEND_PYTHON" - <<'PY' >/dev/null 2>&1
 import uvicorn
+import fastapi
+import sqlalchemy
+import itsdangerous
 raise SystemExit(0 if hasattr(uvicorn, "run") else 1)
 PY
     if [ $? -ne 0 ]; then
-        echo "[ERROR] Backend runtime check failed: uvicorn is not usable in $BACKEND_PYTHON"
+        echo "[ERROR] Backend runtime check failed: required backend dependencies are not usable in $BACKEND_PYTHON"
         echo "[HINT] Recommended fix:"
         echo "  python3 -m venv backend/.venv"
         echo "  backend/.venv/bin/pip install -r backend/requirements.txt"
