@@ -34,6 +34,17 @@ def override_get_db():
 app.dependency_overrides[get_db] = override_get_db
 
 client = TestClient(app)
+ADMIN_PASSWORD = "testpass123"
+
+
+def _ensure_auth():
+    status = client.get("/api/auth/status")
+    if status.status_code == 200 and status.json().get("bootstrap_required"):
+        response = client.post("/api/auth/bootstrap", json={"password": ADMIN_PASSWORD})
+        assert response.status_code == 200
+
+
+_ensure_auth()
 
 # --- Tests ---
 
@@ -51,8 +62,10 @@ def test_settings_update_multicloud():
     
     response = client.get("/api/settings")
     data = response.json()
-    assert data["access_key_id"] == "ali_id"
-    assert data["tencent_secret_id"] == "tx_id"
+    assert data["has_access_key_id"] is True
+    assert data["has_access_key_secret"] is True
+    assert data["has_tencent_secret_id"] is True
+    assert data["has_tencent_secret_key"] is False
     assert data["track_domain"] == "https://track.example.com"
 
 

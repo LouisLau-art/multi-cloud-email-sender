@@ -1,14 +1,42 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import App from './App';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import api from './services/api';
 
 // Mock API
 vi.mock('./services/api', () => ({
+  authApi: {
+    status: vi.fn(() => Promise.resolve({ data: { authenticated: true, bootstrap_required: false } })),
+    bootstrap: vi.fn(() => Promise.resolve({ data: { status: 'ok' } })),
+    login: vi.fn(() => Promise.resolve({ data: { status: 'ok' } })),
+    logout: vi.fn(() => Promise.resolve({ data: { status: 'ok' } })),
+  },
+  contactApi: {
+    upload: vi.fn(() => Promise.resolve({ data: { id: 1, count: 0 } })),
+    getAll: vi.fn(() => Promise.resolve({ data: [] })),
+  },
+  settingsApi: {
+    get: vi.fn(() => Promise.resolve({ data: { track_domain: '', from_alias: '' } })),
+    update: vi.fn(() => Promise.resolve({ data: {} })),
+    getReplyTos: vi.fn(() => Promise.resolve({ data: [] })),
+    addReplyTo: vi.fn(() => Promise.resolve({ data: { address: 'a@b.com' } })),
+  },
+  dashboardApi: {
+    getStats: vi.fn(() => Promise.resolve({ data: { total_recipients: 0, sent_count: 0, delivered_count: 0, opened_count: 0, clicked_count: 0, delivery_rate: 0, open_rate: 0, click_rate: 0 } })),
+    getChartData: vi.fn(() => Promise.resolve({ data: [] })),
+    getCampaigns: vi.fn(() => Promise.resolve({ data: [] })),
+    getDetails: vi.fn(() => Promise.resolve({ data: { items: [], total: 0, page: 1, size: 10 } })),
+  },
+  accountApi: {
+    getAll: vi.fn(() => Promise.resolve({ data: [] })),
+    create: vi.fn(() => Promise.resolve({ data: {} })),
+    update: vi.fn(() => Promise.resolve({ data: {} })),
+    delete: vi.fn(() => Promise.resolve({ data: {} })),
+  },
   default: {
     get: vi.fn(() => Promise.resolve({ data: [] })),
     post: vi.fn(() => Promise.resolve({ data: {} })),
+    delete: vi.fn(() => Promise.resolve({ data: {} })),
     create: vi.fn(() => ({
       get: vi.fn(),
       post: vi.fn(),
@@ -43,21 +71,18 @@ describe('App', () => {
       </BrowserRouter>
     );
     
-    expect(screen.getByText(/邮件推送系统/i)).toBeInTheDocument();
-    // Use waitFor to handle async rendering if needed, though menu is static
-    expect(screen.getByText(/邮件任务/i)).toBeInTheDocument();
+    expect(await screen.findByText(/邮件推送系统/i)).toBeInTheDocument();
+    expect(screen.getByText(/数据看板/i)).toBeInTheDocument();
+    expect(screen.getByText(/发信任务/i)).toBeInTheDocument();
     expect(screen.getByText(/联系人管理/i)).toBeInTheDocument();
   });
 
-  it('renders campaign form fields', async () => {
+  it('renders dashboard shell', async () => {
     render(
       <BrowserRouter>
         <App />
       </BrowserRouter>
     );
-    // 等待异步组件加载（如果需要），这里主要是检查静态文本
-    // 检查新加的字段 Label
-    expect(await screen.findByText(/计划开始时间/i)).toBeInTheDocument();
-    expect(await screen.findByText(/本次任务昵称/i)).toBeInTheDocument();
+    expect(await screen.findByText(/详细数据/i)).toBeInTheDocument();
   });
 });

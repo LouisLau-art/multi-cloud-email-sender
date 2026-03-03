@@ -31,6 +31,8 @@ class Setting(Base):
     )  # Base URL for pixel/links
 
     from_alias = Column(String)
+    admin_password_hash = Column(String, nullable=True)
+    admin_password_salt = Column(String, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -85,6 +87,9 @@ class Contact(Base):
     id = Column(Integer, primary_key=True, index=True)
     email = Column(String, index=True)
     name = Column(String)
+    first_name = Column(String, nullable=True)
+    middle_name = Column(String, nullable=True)
+    last_name = Column(String, nullable=True)
     extra_vars = Column(Text)  # JSON string for other variables
     list_id = Column(Integer, ForeignKey("contact_lists.id"))
     contact_list = relationship("ContactList", back_populates="contacts")
@@ -166,13 +171,19 @@ class CampaignRecipient(Base):
     campaign_id = Column(Integer, ForeignKey("campaigns.id"))
     contact_id = Column(Integer, ForeignKey("contacts.id"), nullable=True)
     email = Column(String, index=True)
+    name_snapshot = Column(String, nullable=True)
+    first_name_snapshot = Column(String, nullable=True)
+    middle_name_snapshot = Column(String, nullable=True)
+    last_name_snapshot = Column(String, nullable=True)
+    extra_vars_snapshot = Column(Text, nullable=True)  # JSON string
+    send_order = Column(Integer, index=True, nullable=True)
     status = Column(
-        String, default="sent"
-    )  # sent, failed, opened, clicked, unsubscribed
+        String, default="pending"
+    )  # pending, sending, sent, failed, opened, clicked, unsubscribed
 
     error_message = Column(Text, nullable=True)
 
-    sent_at = Column(DateTime, default=datetime.utcnow)
+    sent_at = Column(DateTime, nullable=True)
     opened_at = Column(DateTime, nullable=True)
     clicked_at = Column(DateTime, nullable=True)
 

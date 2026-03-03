@@ -4,54 +4,53 @@ from alibabacloud_tea_openapi import models as open_api_models
 from alibabacloud_dm20151123 import models as dm_20151123_models
 from alibabacloud_tea_util import models as util_models
 
+
 class AliyunService:
     @staticmethod
-    def create_client(access_key_id: str, access_key_secret: str, region_id: str = "cn-hangzhou") -> Dm20151123Client:
+    def create_client(
+        access_key_id: str,
+        access_key_secret: str,
+        region_id: str = "cn-hangzhou",
+    ) -> Dm20151123Client:
         config = open_api_models.Config(
             access_key_id=access_key_id,
             access_key_secret=access_key_secret,
-            read_timeout=10000, # 10s
-            connect_timeout=10000, # 10s
-            protocol='HTTP' # 强制使用 HTTP，解决本地 SSL 握手失败
+            read_timeout=10000,  # 10s
+            connect_timeout=10000,  # 10s
+            protocol="HTTPS",
         )
-        # config.endpoint = f'dm.{region_id}.aliyuncs.com'
-        # 使用公网 Endpoint
-        config.endpoint = 'dm.aliyuncs.com'
+        config.endpoint = "dm.aliyuncs.com"
         return Dm20151123Client(config)
 
     @staticmethod
     def query_templates(client: Dm20151123Client, page_no: int = 1, page_size: int = 50):
         request = dm_20151123_models.QueryTemplateByParamRequest(
-            page_no=page_no,
-            page_size=page_size
+            page_no=page_no, page_size=page_size
         )
-        runtime = util_models.RuntimeOptions(ignore_ssl=True) # 尝试忽略 SSL
+        runtime = util_models.RuntimeOptions()
         return client.query_template_by_param_with_options(request, runtime)
 
     @staticmethod
     def desc_template(client: Dm20151123Client, template_id: int):
-        request = dm_20151123_models.DescTemplateRequest(
-            template_id=template_id
-        )
-        runtime = util_models.RuntimeOptions(ignore_ssl=True) # 尝试忽略 SSL
+        request = dm_20151123_models.DescTemplateRequest(template_id=template_id)
+        runtime = util_models.RuntimeOptions()
         return client.desc_template_with_options(request, runtime)
 
     @staticmethod
     def query_mail_address(client: Dm20151123Client, page_no: int = 1, page_size: int = 50):
         request = dm_20151123_models.QueryMailAddressByParamRequest(
-            page_no=page_no,
-            page_size=page_size
+            page_no=page_no, page_size=page_size
         )
-        runtime = util_models.RuntimeOptions(ignore_ssl=True)
+        runtime = util_models.RuntimeOptions()
         return client.query_mail_address_by_param_with_options(request, runtime)
 
     @staticmethod
     def batch_send_mail(
         client: Dm20151123Client,
         account_name: str,
-        receivers_name: str, # 收件人列表名称
+        receivers_name: str,  # 收件人列表名称
         template_name: str,  # 模板名称
-        tag_name: str = None
+        tag_name: str = None,
     ):
         """
         注意：阿里云的 BatchSendMail 是基于控制台预先配置好的‘收件人列表’和‘模板’。
@@ -63,7 +62,7 @@ class AliyunService:
             receivers_name=receivers_name,
             template_name=template_name,
             address_type=0,
-            tag_name=tag_name
+            tag_name=tag_name,
         )
         runtime = util_models.RuntimeOptions()
         return client.batch_send_mail_with_options(request, runtime)
@@ -77,7 +76,7 @@ class AliyunService:
         to_address: str,
         subject: str,
         html_body: str,
-        from_alias: str = None
+        from_alias: str = None,
     ):
         request = dm_20151123_models.SingleSendMailRequest(
             account_name=account_name,
@@ -86,7 +85,7 @@ class AliyunService:
             to_address=to_address,
             subject=subject,
             html_body=html_body,
-            from_alias=from_alias
+            from_alias=from_alias,
         )
         runtime = util_models.RuntimeOptions()
         return client.single_send_mail_with_options(request, runtime)

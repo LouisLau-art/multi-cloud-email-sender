@@ -1,27 +1,45 @@
+import html
+import json
+import logging
+import os
+import re
+import time
+import urllib.parse
+import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
+from threading import Lock
+from types import SimpleNamespace
+
 from apscheduler.schedulers.background import BackgroundScheduler
-from sqlalchemy.orm import Session
 from sqlalchemy import func
-from .database import SessionLocal
+from sqlalchemy.orm import Session
+
 from ..models import models
 from ..services.aliyun_service import AliyunService
 from ..services.tencent_service import TencentService
-import logging
-import json
-import time
-from datetime import datetime
-import random
-import re
-import uuid
-import urllib.parse
-import html
-from threading import Lock
-from types import SimpleNamespace
+from .database import SessionLocal
+from .security import decrypt_secret
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+try:
+    SEND_THROTTLE_SECONDS = float(os.getenv("SEND_THROTTLE_SECONDS", "0"))
+except ValueError:
+    SEND_THROTTLE_SECONDS = 0.0
+try:
+    CAMPAIGN_PARALLELISM = max(
+        1, int(os.getenv("CAMPAIGN_PARALLELISM", "4"))
+    )
+except ValueError:
+    CAMPAIGN_PARALLELISM = 4
+
 scheduler = BackgroundScheduler()
 _send_campaign_batch_lock = Lock()
+_campaign_job_locks = {}
+_campaign_job_locks_guard = Lock()
+
 TRACKABLE_HREF_PATTERN = re.compile(
     r'href\s*=\s*(["\']?)(?P<url>(?:https?://|mailto:|tel:|sms:)[^"\'>\s]+)\1',
     re.IGNORECASE,
@@ -33,10 +51,31 @@ PLAIN_TEXT_LINK_PATTERN = re.compile(
     re.IGNORECASE,
 )
 TRAILING_LINK_PUNCTUATION = ".,;:!?)]}>，。；：！？）】》"
+SUCCESS_STATUSES = ("sent", "opened", "clicked", "unsubscribed")
 
 
 def get_db_session():
     return SessionLocal()
+
+
+def _decrypt_account_secrets(account):
+    if not account:
+        return account
+    return SimpleNamespace(
+        id=getattr(account, "id", None),
+        provider=getattr(account, "provider", None),
+        name=getattr(account, "name", None),
+        access_key_id=getattr(account, "access_key_id", None),
+        access_key_secret=decrypt_secret(getattr(account, "access_key_secret", None)),
+        region_id=getattr(account, "region_id", None),
+        tencent_secret_id=getattr(account, "tencent_secret_id", None),
+        tencent_secret_key=decrypt_secret(
+            getattr(account, "tencent_secret_key", None)
+        ),
+        tencent_region=getattr(account, "tencent_region", None),
+        from_alias=getattr(account, "from_alias", None),
+        enabled=getattr(account, "enabled", True),
+    )
 
 
 def _legacy_account_from_setting(setting, provider: str):
@@ -48,7 +87,7 @@ def _legacy_account_from_setting(setting, provider: str):
             provider="aliyun",
             name="legacy-aliyun",
             access_key_id=setting.access_key_id,
-            access_key_secret=setting.access_key_secret,
+            access_key_secret=decrypt_secret(setting.access_key_secret),
             region_id=setting.region_id or "cn-hangzhou",
             from_alias=setting.from_alias,
             enabled=True,
@@ -63,7 +102,7 @@ def _legacy_account_from_setting(setting, provider: str):
             provider="tencent",
             name="legacy-tencent",
             tencent_secret_id=setting.tencent_secret_id,
-            tencent_secret_key=setting.tencent_secret_key,
+            tencent_secret_key=decrypt_secret(setting.tencent_secret_key),
             tencent_region=setting.tencent_region or "ap-hongkong",
             from_alias=setting.from_alias,
             enabled=True,
@@ -88,9 +127,8 @@ def _resolve_campaign_account(db: Session, campaign, setting):
             return None, "Campaign provider/account mismatch"
         if not account.enabled:
             return None, f"Cloud account disabled: id={campaign.account_id}"
-        return account, None
+        return _decrypt_account_secrets(account), None
 
-    # Backward-compatible fallback for old campaigns.
     accounts = (
         db.query(models.CloudAccount)
         .filter(
@@ -101,7 +139,7 @@ def _resolve_campaign_account(db: Session, campaign, setting):
         .all()
     )
     if len(accounts) == 1:
-        return accounts[0], None
+        return _decrypt_account_secrets(accounts[0]), None
     if len(accounts) > 1:
         return None, "Multiple cloud accounts found; campaign.account_id is required"
 
@@ -158,10 +196,6 @@ def _linkify_html_fragment(fragment: str):
 
 
 def linkify_plain_text_targets(body: str):
-    """
-    Convert plain text URLs/emails in HTML text nodes into anchor tags.
-    Existing <a>...</a> blocks are preserved to avoid nested anchors.
-    """
     if not body:
         return body
 
@@ -175,340 +209,361 @@ def linkify_plain_text_targets(body: str):
     return "".join(out)
 
 
-def send_campaign_batch():
-    if not _send_campaign_batch_lock.acquire(blocking=False):
-        logger.info(
-            "send_campaign_batch is already running; skip overlapping trigger."
+def _build_vars_map(recipient: models.CampaignRecipient):
+    try:
+        vars_map = (
+            json.loads(recipient.extra_vars_snapshot) if recipient.extra_vars_snapshot else {}
         )
+        if not isinstance(vars_map, dict):
+            vars_map = {}
+    except Exception:
+        vars_map = {}
+
+    first_name = (recipient.first_name_snapshot or "").strip()
+    middle_name = (recipient.middle_name_snapshot or "").strip()
+    last_name = (recipient.last_name_snapshot or "").strip()
+
+    if first_name:
+        vars_map["FirstName"] = first_name
+        vars_map["first_name"] = first_name
+        vars_map["firstName"] = first_name
+    if middle_name:
+        vars_map["MiddleName"] = middle_name
+        vars_map["middle_name"] = middle_name
+        vars_map["middleName"] = middle_name
+    if last_name:
+        vars_map["LastName"] = last_name
+        vars_map["last_name"] = last_name
+        vars_map["lastName"] = last_name
+
+    full_name = (recipient.name_snapshot or "").strip()
+    if not full_name:
+        full_name = " ".join(
+            part for part in [first_name, middle_name, last_name] if part
+        ).strip()
+    if full_name:
+        vars_map["Name"] = full_name
+        vars_map["name"] = full_name
+        vars_map["username"] = full_name
+    vars_map["Email"] = recipient.email or ""
+    return vars_map
+
+
+def _render_subject(template_subject: str, vars_map: dict):
+    subject = template_subject or ""
+    for key, val in vars_map.items():
+        subject = subject.replace(f"{{{key}}}", str(val))
+        subject = subject.replace(f"{{{{{key}}}}}", str(val))
+    # Strip unresolved variable-like braces while preserving most CSS/JS braces.
+    subject = re.sub(r"\{([^{}]+)\}", r"\1", subject)
+    return subject
+
+
+def _render_body(template_body: str, vars_map: dict):
+    body = template_body or ""
+    for key, val in vars_map.items():
+        body = body.replace(f"{{{key}}}", str(val))
+        body = body.replace(f"{{{{{key}}}}}", str(val))
+    body = re.sub(r"\{([\w\s]+)\}", r"\1", body)
+    return linkify_plain_text_targets(body)
+
+
+def _apply_tracking(body: str, tracking_id: str, track_base_url: str, track_opens: bool, track_clicks: bool):
+    tracked_links = set()
+    working_body = body
+    pixel_url = f"{track_base_url}/api/track/open/{tracking_id}"
+    pixel_html = f'<img src="{pixel_url}" width="1" height="1" style="display:none" />'
+
+    if track_opens:
+        if "</body>" in working_body:
+            working_body = working_body.replace("</body>", f"{pixel_html}</body>")
+        else:
+            working_body += pixel_html
+
+    if track_clicks:
+        def replace_link(match):
+            quote = match.group(1) or '"'
+            original_url = html.unescape(match.group("url").strip())
+            if "/api/track/" in original_url:
+                return match.group(0)
+            encoded_url = urllib.parse.quote(original_url, safe="")
+            tracking_url = (
+                f"{track_base_url}/api/track/click/{tracking_id}?target={encoded_url}"
+            )
+            tracked_links.add(original_url)
+            return f"href={quote}{tracking_url}{quote}"
+
+        working_body, _ = TRACKABLE_HREF_PATTERN.subn(replace_link, working_body)
+
+    return working_body, tracked_links
+
+
+def _campaign_sent_count(db: Session, campaign_id: int) -> int:
+    return (
+        db.query(models.CampaignRecipient)
+        .filter(
+            models.CampaignRecipient.campaign_id == campaign_id,
+            models.CampaignRecipient.status.in_(SUCCESS_STATUSES),
+        )
+        .count()
+    )
+
+
+def _campaign_lock(campaign_id: int) -> Lock:
+    with _campaign_job_locks_guard:
+        if campaign_id not in _campaign_job_locks:
+            _campaign_job_locks[campaign_id] = Lock()
+        return _campaign_job_locks[campaign_id]
+
+
+def _process_campaign_batch(campaign_id: int):
+    campaign_lock = _campaign_lock(campaign_id)
+    if not campaign_lock.acquire(blocking=False):
+        logger.info("Campaign %s is already processing; skip overlapping run.", campaign_id)
         return
 
     db = None
     try:
         db = get_db_session()
-        # 0. 濡偓閺屻儴顓搁崚鎺嶆崲閸?
-        scheduled_campaigns = (
-            db.query(models.Campaign)
-            .filter(models.Campaign.status == "scheduled")
+        campaign = (
+            db.query(models.Campaign).filter(models.Campaign.id == campaign_id).first()
+        )
+        if not campaign or campaign.status != "sending":
+            return
+
+        setting = db.query(models.Setting).first() or SimpleNamespace(
+            track_domain="http://127.0.0.1:8000",
+            from_alias=None,
+            access_key_id=None,
+            access_key_secret=None,
+            tencent_secret_id=None,
+            tencent_secret_key=None,
+            region_id="cn-hangzhou",
+            tencent_region="ap-hongkong",
+        )
+
+        template = (
+            db.query(models.EmailTemplate)
+            .filter(models.EmailTemplate.id == campaign.template_id)
+            .first()
+        )
+        if not template:
+            campaign.status = "error"
+            db.add(
+                models.CampaignBatch(
+                    campaign_id=campaign.id,
+                    status="error",
+                    recipient_count=0,
+                    error_message=f"Template not found: id={campaign.template_id}",
+                    sent_at=datetime.utcnow(),
+                )
+            )
+            db.commit()
+            return
+
+        account, account_err = _resolve_campaign_account(db, campaign, setting)
+        if account_err:
+            campaign.status = "error"
+            db.add(
+                models.CampaignBatch(
+                    campaign_id=campaign.id,
+                    status="error",
+                    recipient_count=0,
+                    error_message=account_err,
+                    sent_at=datetime.utcnow(),
+                )
+            )
+            db.commit()
+            return
+
+        if template.provider in {"aliyun", "tencent"}:
+            if template.provider != campaign.provider:
+                campaign.status = "error"
+                db.add(
+                    models.CampaignBatch(
+                        campaign_id=campaign.id,
+                        status="error",
+                        recipient_count=0,
+                        error_message="Template/provider/account mismatch",
+                        sent_at=datetime.utcnow(),
+                    )
+                )
+                db.commit()
+                return
+            if template.account_id and account.id and template.account_id != account.id:
+                campaign.status = "error"
+                db.add(
+                    models.CampaignBatch(
+                        campaign_id=campaign.id,
+                        status="error",
+                        recipient_count=0,
+                        error_message="Template/provider/account mismatch",
+                        sent_at=datetime.utcnow(),
+                    )
+                )
+                db.commit()
+                return
+
+        last_batch = (
+            db.query(models.CampaignBatch)
+            .filter(models.CampaignBatch.campaign_id == campaign.id)
+            .order_by(models.CampaignBatch.sent_at.desc())
+            .first()
+        )
+        if last_batch and last_batch.sent_at:
+            gap_minutes = (datetime.utcnow() - last_batch.sent_at).total_seconds() / 60
+            if gap_minutes < campaign.interval_minutes:
+                return
+
+        recipients = (
+            db.query(models.CampaignRecipient)
+            .filter(
+                models.CampaignRecipient.campaign_id == campaign.id,
+                models.CampaignRecipient.status == "pending",
+            )
+            .order_by(
+                models.CampaignRecipient.send_order.asc(),
+                models.CampaignRecipient.id.asc(),
+            )
+            .limit(campaign.batch_size)
             .all()
         )
-        for sc in scheduled_campaigns:
-            if sc.scheduled_start_time and datetime.utcnow() >= sc.scheduled_start_time:
-                sc.status = "sending"
-                db.commit()
 
-        # 1. 閺屻儲澹樻潻鎰攽娑擃厾娈戞禒璇插
-        active_campaigns = (
-            db.query(models.Campaign).filter(models.Campaign.status == "sending").all()
+        if not recipients:
+            campaign.sent_count = _campaign_sent_count(db, campaign.id)
+            campaign.status = "completed"
+            db.commit()
+            return
+
+        logger.info(
+            "Campaign %s (%s): sending batch size=%s",
+            campaign.name,
+            campaign.provider,
+            len(recipients),
         )
 
-        for campaign in active_campaigns:
-            setting = db.query(models.Setting).first()
-            if not setting:
-                setting = SimpleNamespace(
-                    track_domain="http://192.168.2.8:8000", from_alias=None
-                )
-
-            template = (
-                db.query(models.EmailTemplate)
-                .filter(models.EmailTemplate.id == campaign.template_id)
-                .first()
+        ali_client = None
+        if campaign.provider == "aliyun":
+            ali_client = AliyunService.create_client(
+                account.access_key_id,
+                account.access_key_secret,
+                account.region_id,
             )
-            if not template:
-                err_msg = f"Template not found: id={campaign.template_id}"
-                logger.error(f"Campaign {campaign.id} failed: {err_msg}")
-                campaign.status = "error"
-                db.add(
-                    models.CampaignBatch(
-                        campaign_id=campaign.id,
-                        status="error",
-                        recipient_count=0,
-                        error_message=err_msg,
-                        sent_at=datetime.utcnow(),
-                    )
-                )
+
+        track_base_url = (
+            (setting.track_domain or "http://127.0.0.1:8000").rstrip("/")
+        )
+        batch_sent = 0
+        batch_failed = 0
+
+        for recipient in recipients:
+            db.refresh(campaign)
+            if campaign.status != "sending":
+                break
+
+            clean_to_address = (recipient.email or "").split()[0].strip()
+            if not clean_to_address:
+                recipient.status = "failed"
+                recipient.error_message = "Recipient email is empty"
                 db.commit()
+                batch_failed += 1
                 continue
 
-            account, account_err = _resolve_campaign_account(db, campaign, setting)
-            if account_err:
-                logger.error(f"Campaign {campaign.id} failed: {account_err}")
-                campaign.status = "error"
-                db.add(
-                    models.CampaignBatch(
-                        campaign_id=campaign.id,
-                        status="error",
-                        recipient_count=0,
-                        error_message=account_err,
-                        sent_at=datetime.utcnow(),
-                    )
-                )
-                db.commit()
-                continue
+            if not recipient.tracking_id:
+                recipient.tracking_id = str(uuid.uuid4())
+            tracking_id = recipient.tracking_id
+            recipient.status = "sending"
+            db.commit()
 
-            if template.provider in {"aliyun", "tencent"}:
-                if template.provider != campaign.provider:
-                    err_msg = "Template/provider/account mismatch"
-                    logger.error(f"Campaign {campaign.id} failed: {err_msg}")
-                    campaign.status = "error"
-                    db.add(
-                        models.CampaignBatch(
-                            campaign_id=campaign.id,
-                            status="error",
-                            recipient_count=0,
-                            error_message=err_msg,
-                            sent_at=datetime.utcnow(),
-                        )
-                    )
-                    db.commit()
-                    continue
-                if template.account_id and account.id and template.account_id != account.id:
-                    err_msg = "Template/provider/account mismatch"
-                    logger.error(f"Campaign {campaign.id} failed: {err_msg}")
-                    campaign.status = "error"
-                    db.add(
-                        models.CampaignBatch(
-                            campaign_id=campaign.id,
-                            status="error",
-                            recipient_count=0,
-                            error_message=err_msg,
-                            sent_at=datetime.utcnow(),
-                        )
-                    )
-                    db.commit()
-                    continue
-
-            # 闂傛挳娈уΛ鈧弻?
-            last_batch = (
-                db.query(models.CampaignBatch)
-                .filter(models.CampaignBatch.campaign_id == campaign.id)
-                .order_by(models.CampaignBatch.sent_at.desc())
-                .first()
+            vars_map = _build_vars_map(recipient)
+            subject = _render_subject(template.subject, vars_map)
+            real_from_alias = (
+                campaign.from_alias
+                or template.from_alias
+                or account.from_alias
+                or setting.from_alias
+                or campaign.account_name.split("@")[0]
             )
 
-            if last_batch:
-                time_since_last = (
-                    datetime.utcnow() - last_batch.sent_at
-                ).total_seconds() / 60
-                if time_since_last < campaign.interval_minutes:
-                    continue
-
-            # 閼惧嘲褰囬懕鏃傞兇娴?
-            contacts = (
-                db.query(models.Contact)
-                .filter(models.Contact.list_id == campaign.list_id)
-                .offset(campaign.sent_count)
-                .limit(campaign.batch_size)
-                .all()
-            )
-
-            if not contacts:
-                campaign.status = "completed"
-                db.commit()
-                continue
-
-            logger.info(
-                f"Campaign {campaign.name} ({campaign.provider}): Sending batch of {len(contacts)}..."
-            )
-
-            ali_client = None
-            if campaign.provider == "aliyun":
-                ali_client = AliyunService.create_client(
-                    account.access_key_id, account.access_key_secret, account.region_id
-                )
-
-            for i, contact in enumerate(contacts):
-                db.refresh(campaign)
-                if campaign.status != "sending":
-                    break
-
-                clean_to_address = contact.email.split()[0].strip()
-                tracking_id = str(uuid.uuid4())
-                tracked_links = set()
-
-                # 鐠佹澘缍嶉崣鎴︹偓浣规）韫?
-                recipient = models.CampaignRecipient(
-                    campaign_id=campaign.id,
-                    contact_id=contact.id,
-                    email=clean_to_address,
-                    tracking_id=tracking_id,
-                    status="sending",
-                )
-                db.add(recipient)
-                db.commit()  # 閸忓牊褰佹禍銈勪簰閼惧嘲绶?ID (閾忕晫鍔ф潻娆撳櫡 UUID 婢剁喓鏁ゆ禍?
-
-                # 閸戝棗顦崣姗€鍣?
-                vars_map = json.loads(contact.extra_vars) if contact.extra_vars else {}
-                if contact.name:
-                    vars_map["Name"] = contact.name
-                    vars_map["name"] = contact.name
-                    vars_map["username"] = contact.name
-                vars_map["Email"] = contact.email or ""
-
-                # 閺嶅洭顣介弴鎸庡床 (閸忔娊鏁敍姘倱閺冭埖鏁幐?{key} 閸?{{key}})
-                subject = template.subject
-                for key, val in vars_map.items():
-                    subject = subject.replace(f"{{{key}}}", str(val))
-                    subject = subject.replace(f"{{{{{key}}}}}", str(val))
-
-                # 濞撳懐鎮婇張顏勫爱闁板秶娈戦崡鐘辩秴缁楋讣绱扮亸?{娴犵粯鍓伴崘鍛啇} 娑擃厾娈戦懞杈ㄥ閸欓些闂勩倧绱濇穱婵堟殌閸愬懘鍎撮弬鍥ㄦ拱
-                subject = re.sub(r"\{([^{}]+)\}", r"\1", subject)
-
-                real_from_alias = (
-                    campaign.from_alias
-                    or template.from_alias
-                    or account.from_alias
-                    or setting.from_alias
-                    or campaign.account_name.split("@")[0]
-                )
-
-                # 鏉╁€熼嚋閸嶅繒绀?URL (娴犲酣鍘ょ純顔款嚢閸?
-                track_base_url = setting.track_domain or "http://192.168.2.8:8000"
-                # 缁夊娅庨張顐㈢啲閺傛粍娼?
-                if track_base_url.endswith("/"):
-                    track_base_url = track_base_url[:-1]
-
-                pixel_url = f"{track_base_url}/api/track/open/{tracking_id}"
-                pixel_html = f'<img src="{pixel_url}" width="1" height="1" style="display:none" />'
-
-                # 闁剧偓甯存潻鍊熼嚋閺囨寧宕查崙鑺ユ殶
-                def replace_link(match):
-                    quote = match.group(1) or '"'
-                    original_url = html.unescape(match.group("url").strip())
-                    # 闁灝鍘ら弴鎸庡床瀹歌尙绮￠弰顖濇嫹闊亪鎽奸幒銉ф畱URL
-                    if "/api/track" in original_url:
-                        return match.group(0)
-                    encoded_url = urllib.parse.quote(original_url, safe="")
-                    tracking_url = f"{track_base_url}/api/track/click/{tracking_id}?target={encoded_url}"
-                    tracked_links.add(original_url)
-                    return f"href={quote}{tracking_url}{quote}"
-
-                try:
-                    if campaign.provider == "tencent":
-                        if template.provider == "tencent" and template.provider_id:
-                            # 閼垫崘顔嗘禍鎴災侀弶鎸幠佸?                            # 鐏忔繆鐦▔銊ュ弳 pixel 閸掓澘褰夐柌蹇庤厬閿涘苯顩ч弸婊勀侀弶鎸庢暜閹?{{tracking_pixel}}
-                            # 娴ｅ棗銇囨径姘殶閺冭泛鈧瑦膩閺夊じ绗夐弨顖涘瘮閿涘本澧嶆禒銉δ侀弶鎸幠佸蹇曟畱鏉╁€熼嚋濮ｆ棁绶濋崶浼存閿涘矂娅庨棃鐐茨侀弶鍧楀櫡妫板嫮鏆€娴滃棔缍呯純?                            # 鏉╂瑩鍣烽弳鍌涙鐠哄疇绻冨Ο鈩冩緲濡€崇础閻ㄥ嫬鍎氱槐鐘虫暈閸忋儻绱濋幋鏍偓鍛矌娴犲懍绶风挧?send_mail 閹存劕濮?
-                            tencent_response = TencentService.send_mail(
-                                account.tencent_secret_id,
-                                account.tencent_secret_key,
-                                account.tencent_region,
-                                campaign.account_name,
-                                clean_to_address,
-                                subject,
-                                "",
-                                from_alias=real_from_alias,
-                                template_id=template.provider_id,
-                                template_params=json.dumps(vars_map),
-                                reply_to_address=campaign.reply_to_address,
-                            )
-                            # Save MessageId for Pull Tracking
-                            if tencent_response and hasattr(
-                                tencent_response, "MessageId"
-                            ):
-                                recipient.message_id = tencent_response.MessageId
-                                recipient.provider = "tencent"
-                        else:
-                            # 閼垫崘顔嗘禍?HTML 濡€崇础
-                            body = template.body
-                            for key, val in vars_map.items():
-                                body = body.replace(f"{{{key}}}", str(val))
-                                body = body.replace(f"{{{{{key}}}}}", str(val))
-
-                            # 濞撳懐鎮婇張顏勫爱闁板秶娈戦崣姗€鍣?(閸欘亝绔婚悶鍡欐箙鐠ч攱娼甸崓蹇撳綁闁插繒娈戦敍宀勪缉閸忓秶鐗崸?CSS/JS)
-                            body = re.sub(r"\{([\w\s]+)\}", r"\1", body)
-                            body = linkify_plain_text_targets(body)
-
-                            # 1. 濞夈劌鍙嗛崓蹇曠
-                            if campaign.track_opens:
-                                if "</body>" in body:
-                                    body = body.replace(
-                                        "</body>", f"{pixel_html}</body>"
-                                    )
-                                    logger.info(
-                                        f"Injecting pixel for {clean_to_address}: Success (</body> found)"
-                                    )
-                                else:
-                                    body += pixel_html
-                                    logger.info(
-                                        f"Injecting pixel for {clean_to_address}: Appended to end"
-                                    )
-
-                            # 2. 閺囨寧宕查悙鐟板毊闁剧偓甯?
-                            if campaign.track_clicks:
-                                body, replaced_links = TRACKABLE_HREF_PATTERN.subn(
-                                    replace_link,
-                                    body,
-                                )
-                                if replaced_links:
-                                    logger.info(
-                                        f"Link tracking injected for {clean_to_address}"
-                                    )
-
-                            tencent_response = TencentService.send_mail(
-                                account.tencent_secret_id,
-                                account.tencent_secret_key,
-                                account.tencent_region,
-                                campaign.account_name,
-                                clean_to_address,
-                                subject,
-                                body,
-                                from_alias=real_from_alias,
-                                reply_to_address=campaign.reply_to_address,
-                            )
-                            # Save MessageId for Pull Tracking
-                            if tencent_response and hasattr(
-                                tencent_response, "MessageId"
-                            ):
-                                recipient.message_id = tencent_response.MessageId
-                                recipient.provider = "tencent"
-                    elif campaign.provider == "aliyun":
-                        body = template.body
-                        for key, val in vars_map.items():
-                            body = body.replace(f"{{{key}}}", str(val))
-                            body = body.replace(f"{{{{{key}}}}}", str(val))
-
-                        # 濞撳懐鎮婇張顏勫爱闁板秶娈戦崣姗€鍣?(閸欘亝绔婚悶鍡欐箙鐠ч攱娼甸崓蹇撳綁闁插繒娈戦敍宀勪缉閸忓秶鐗崸?CSS/JS)
-                        body = re.sub(r"\{([\w\s]+)\}", r"\1", body)
-                        body = linkify_plain_text_targets(body)
-
-                        # 1. 濞夈劌鍙嗛崓蹇曠
-                        if campaign.track_opens:
-                            if "</body>" in body:
-                                body = body.replace("</body>", f"{pixel_html}</body>")
-                                logger.info(
-                                    f"Injecting pixel for {clean_to_address} (Aliyun)"
-                                )
-                            else:
-                                body += pixel_html
-
-                        # 2. 閺囨寧宕查悙鐟板毊闁剧偓甯?
-                        if campaign.track_clicks:
-                            body, replaced_links = TRACKABLE_HREF_PATTERN.subn(
-                                replace_link, body
-                            )
-                            if replaced_links:
-                                logger.info(
-                                    f"Link tracking injected for {clean_to_address} (Aliyun)"
-                                )
-
-                        # 闂冨潡鍣锋禍? 婵″倹鐏?campaign.reply_to_address 閺堝鈧》绱濋崚娆掝吇娑撳搫绱戦崥顖氭礀娣団€虫勾閸р偓閸旂喕鍏?(True)
-                        use_reply_to = True if campaign.reply_to_address else False
-
-                        AliyunService.single_send_mail(
-                            ali_client,
+            try:
+                if campaign.provider == "tencent":
+                    if template.provider == "tencent" and template.provider_id:
+                        tencent_response = TencentService.send_mail(
+                            account.tencent_secret_id,
+                            account.tencent_secret_key,
+                            account.tencent_region,
                             campaign.account_name,
-                            use_reply_to,
-                            1,
+                            clean_to_address,
+                            subject,
+                            "",
+                            from_alias=real_from_alias,
+                            template_id=template.provider_id,
+                            template_params=json.dumps(vars_map, ensure_ascii=False),
+                            reply_to_address=campaign.reply_to_address,
+                        )
+                        if tencent_response and hasattr(tencent_response, "MessageId"):
+                            recipient.message_id = tencent_response.MessageId
+                            recipient.provider = "tencent"
+                    else:
+                        body = _render_body(template.body, vars_map)
+                        body, tracked_links = _apply_tracking(
+                            body,
+                            tracking_id,
+                            track_base_url,
+                            campaign.track_opens,
+                            campaign.track_clicks,
+                        )
+                        tencent_response = TencentService.send_mail(
+                            account.tencent_secret_id,
+                            account.tencent_secret_key,
+                            account.tencent_region,
+                            campaign.account_name,
                             clean_to_address,
                             subject,
                             body,
-                            real_from_alias,
+                            from_alias=real_from_alias,
+                            reply_to_address=campaign.reply_to_address,
                         )
-
-                    logger.info(f"[{i + 1}/{len(contacts)}] Sent to {clean_to_address}")
-                    # 閺囧瓨鏌婇悩鑸碘偓浣疯礋 sent
-                    recipient.status = "sent"
-                    recipient.sent_at = datetime.utcnow()
-
+                        if tencent_response and hasattr(tencent_response, "MessageId"):
+                            recipient.message_id = tencent_response.MessageId
+                            recipient.provider = "tencent"
+                        if campaign.track_clicks and tracked_links:
+                            existing_urls = {
+                                row[0]
+                                for row in db.query(models.CampaignRecipientLink.target_url)
+                                .filter(
+                                    models.CampaignRecipientLink.tracking_id
+                                    == tracking_id
+                                )
+                                .all()
+                            }
+                            for target_url in tracked_links - existing_urls:
+                                db.add(
+                                    models.CampaignRecipientLink(
+                                        tracking_id=tracking_id,
+                                        target_url=target_url,
+                                    )
+                                )
+                else:
+                    body = _render_body(template.body, vars_map)
+                    body, tracked_links = _apply_tracking(
+                        body,
+                        tracking_id,
+                        track_base_url,
+                        campaign.track_opens,
+                        campaign.track_clicks,
+                    )
+                    use_reply_to = True if campaign.reply_to_address else False
+                    AliyunService.single_send_mail(
+                        ali_client,
+                        campaign.account_name,
+                        use_reply_to,
+                        1,
+                        clean_to_address,
+                        subject,
+                        body,
+                        real_from_alias,
+                    )
                     if campaign.track_clicks and tracked_links:
                         existing_urls = {
                             row[0]
@@ -521,44 +576,122 @@ def send_campaign_batch():
                         for target_url in tracked_links - existing_urls:
                             db.add(
                                 models.CampaignRecipientLink(
-                                    tracking_id=tracking_id, target_url=target_url
+                                    tracking_id=tracking_id,
+                                    target_url=target_url,
                                 )
                             )
 
-                    db.commit()
-
-                    time.sleep(random.uniform(0.2, 1.0))
-                except Exception as e:
-                    logger.error(f"閴?FAILED: {clean_to_address} - {e}")
-                    recipient.status = "failed"
-                    recipient.error_message = str(e)
-                    db.commit()
-
-            # 閺囧瓨鏌婃潻娑樺
-            campaign.sent_count += len(contacts)
-            if campaign.sent_count >= campaign.total_recipients:
-                campaign.status = "completed"
-
-            db.add(
-                models.CampaignBatch(
-                    campaign_id=campaign.id,
-                    status="sent",
-                    recipient_count=len(contacts),
-                    sent_at=datetime.utcnow(),
+                recipient.status = "sent"
+                recipient.error_message = None
+                recipient.sent_at = datetime.utcnow()
+                db.commit()
+                batch_sent += 1
+                if SEND_THROTTLE_SECONDS > 0:
+                    time.sleep(SEND_THROTTLE_SECONDS)
+            except Exception as e:
+                logger.error(
+                    "Send failed campaign=%s recipient=%s err=%s",
+                    campaign.id,
+                    clean_to_address,
+                    e,
                 )
+                recipient.status = "failed"
+                recipient.error_message = str(e)
+                db.commit()
+                batch_failed += 1
+
+        campaign.sent_count = _campaign_sent_count(db, campaign.id)
+        pending_left = (
+            db.query(models.CampaignRecipient)
+            .filter(
+                models.CampaignRecipient.campaign_id == campaign.id,
+                models.CampaignRecipient.status.in_(("pending", "sending")),
             )
-            db.commit()
+            .count()
+        )
+        if pending_left == 0 and campaign.status == "sending":
+            campaign.status = "completed"
+
+        batch_status = "sent"
+        batch_error = None
+        if batch_failed and not batch_sent:
+            batch_status = "error"
+            batch_error = "Batch failed"
+        elif batch_failed:
+            batch_status = "partial"
+            batch_error = f"Batch partial success: sent={batch_sent}, failed={batch_failed}"
+
+        db.add(
+            models.CampaignBatch(
+                campaign_id=campaign.id,
+                status=batch_status,
+                recipient_count=batch_sent + batch_failed,
+                error_message=batch_error,
+                sent_at=datetime.utcnow(),
+            )
+        )
+        db.commit()
+    except Exception:
+        logger.exception("Campaign batch processing failed campaign_id=%s", campaign_id)
     finally:
         if db is not None:
             db.close()
+        campaign_lock.release()
+
+
+def send_campaign_batch():
+    if not _send_campaign_batch_lock.acquire(blocking=False):
+        logger.info("send_campaign_batch is already running; skip overlapping trigger.")
+        return
+
+    db = None
+    active_campaign_ids = []
+    try:
+        db = get_db_session()
+        scheduled_campaigns = (
+            db.query(models.Campaign)
+            .filter(models.Campaign.status == "scheduled")
+            .all()
+        )
+        for campaign in scheduled_campaigns:
+            if campaign.scheduled_start_time and datetime.utcnow() >= campaign.scheduled_start_time:
+                campaign.status = "sending"
+        db.commit()
+
+        active_campaign_ids = [
+            row.id
+            for row in db.query(models.Campaign.id)
+            .filter(models.Campaign.status == "sending")
+            .all()
+        ]
+    finally:
+        if db is not None:
+            db.close()
+
+    try:
+        if not active_campaign_ids:
+            return
+
+        worker_count = min(CAMPAIGN_PARALLELISM, len(active_campaign_ids))
+        logger.info(
+            "Dispatching %s campaigns with parallelism=%s",
+            len(active_campaign_ids),
+            worker_count,
+        )
+        with ThreadPoolExecutor(
+            max_workers=worker_count, thread_name_prefix="campaign-batch"
+        ) as executor:
+            futures = [
+                executor.submit(_process_campaign_batch, campaign_id)
+                for campaign_id in active_campaign_ids
+            ]
+            for future in as_completed(futures):
+                future.result()
+    finally:
         _send_campaign_batch_lock.release()
 
 
 def pull_email_tracking_status():
-    """
-    后台任务：从腾讯云拉取邮件追踪状态(打开/点击)
-    每 5 分钟运行一次，查询最近 7 天内有 message_id 的收件人记录
-    """
     db = get_db_session()
     try:
         tencent_accounts = (
@@ -572,16 +705,14 @@ def pull_email_tracking_status():
             .order_by(models.CloudAccount.id.asc())
             .all()
         )
+        tencent_accounts = [_decrypt_account_secrets(a) for a in tencent_accounts]
 
-        # Backward-compatible fallback for legacy single-account settings.
         if not tencent_accounts:
             setting = db.query(models.Setting).first()
             legacy = _legacy_account_from_setting(setting, "tencent")
             if not legacy:
                 return
             tencent_accounts = [legacy]
-
-        from datetime import timedelta
 
         seven_days_ago = datetime.utcnow() - timedelta(days=7)
         total_updated = 0
@@ -591,6 +722,9 @@ def pull_email_tracking_status():
             secret_id = getattr(account, "tencent_secret_id", None)
             secret_key = getattr(account, "tencent_secret_key", None)
             region = getattr(account, "tencent_region", "ap-hongkong") or "ap-hongkong"
+
+            if not secret_id or not secret_key:
+                continue
 
             unresolved_filters = (
                 models.CampaignRecipient.provider == "tencent",
@@ -610,13 +744,8 @@ def pull_email_tracking_status():
                 pending_query = pending_query.filter(models.Campaign.account_id.is_(None))
             pending_query = pending_query.filter(*unresolved_filters)
 
-            pending_count = pending_query.count()
-            if pending_count == 0:
+            if pending_query.count() == 0:
                 continue
-
-            logger.info(
-                f"[Pull Tracking] Account={account_name}, pending recipients={pending_count}"
-            )
 
             pending_dates = (
                 db.query(func.date(models.CampaignRecipient.sent_at))
@@ -656,18 +785,11 @@ def pull_email_tracking_status():
                         date_query = date_query.filter(models.Campaign.account_id.is_(None))
 
                     date_recipients = date_query.all()
-                    if not date_recipients:
-                        continue
-
                     date_recipient_map = {
                         r.message_id: r for r in date_recipients if r.message_id
                     }
                     if not date_recipient_map:
                         continue
-
-                    logger.info(
-                        f"[Pull Tracking] Account={account_name}, date={date_str}, unresolved={len(date_recipient_map)}"
-                    )
 
                     offset = 0
                     pages = 0
@@ -682,7 +804,6 @@ def pull_email_tracking_status():
                             offset=offset,
                             limit=per_page_limit,
                         )
-
                         status_list = (
                             list(response.EmailStatusList)
                             if response and response.EmailStatusList
@@ -732,27 +853,24 @@ def pull_email_tracking_status():
 
                         if len(status_list) < per_page_limit:
                             break
-
                         offset += per_page_limit
                         pages += 1
 
                     if date_updated:
-                        logger.info(
-                            f"[Pull Tracking] Account={account_name}, date={date_str}, updated={date_updated}"
-                        )
                         total_updated += date_updated
-
                 except Exception as e:
                     logger.error(
-                        f"[Pull Tracking] Error fetching status for {date_str} ({account_name}): {e}"
+                        "[Pull Tracking] Error account=%s date=%s err=%s",
+                        account_name,
+                        date_str,
+                        e,
                     )
                     continue
 
         if total_updated:
-            logger.info(f"[Pull Tracking] Total updated recipients: {total_updated}")
-
+            logger.info("[Pull Tracking] Total updated recipients: %s", total_updated)
     except Exception as e:
-        logger.error(f"[Pull Tracking] Error: {e}")
+        logger.error("[Pull Tracking] Error: %s", e)
     finally:
         db.close()
 

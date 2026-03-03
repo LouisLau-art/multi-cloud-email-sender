@@ -4,6 +4,9 @@ __pycache__/
 *.pyc
 email_app.db
 backend/email_app.db
+*.db-wal
+*.db-shm
+*.db-journal
 dist/
 .DS_Store
 .env
@@ -11,3 +14,4 @@ logs/
 exports/
 cloudflared-config.yml
 build/
+.email_app_master.key

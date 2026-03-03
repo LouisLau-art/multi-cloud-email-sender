@@ -10,3 +10,5 @@ python-multipart
 pandas
 requests
 openpyxl
+cryptography
+itsdangerous

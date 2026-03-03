@@ -4,18 +4,27 @@ import axios from 'axios';
 // If running on port 5173 (Vite Dev Server), point to backend at port 8000 on the same host
 // If running on port 8000 (Served by FastAPI), use relative path
 const isDev = window.location.port === '5173';
+const envBaseUrl = import.meta.env.VITE_API_BASE_URL;
 const API_BASE_URL = isDev 
-    ? `http://${window.location.hostname}:8000/api` 
+    ? (envBaseUrl || `http://${window.location.hostname}:8000/api`)
     : '/api';
 
 console.log(`API Base URL: ${API_BASE_URL}`);
 
 const api = axios.create({
     baseURL: API_BASE_URL,
+    withCredentials: true,
     headers: {
         'Content-Type': 'application/json',
     },
 });
+
+export const authApi = {
+    status: () => api.get('/auth/status'),
+    bootstrap: (password) => api.post('/auth/bootstrap', { password }),
+    login: (password) => api.post('/auth/login', { password }),
+    logout: () => api.post('/auth/logout'),
+};
 
 export const campaignApi = {
     getAll: () => api.get('/campaigns'),
@@ -65,9 +74,21 @@ export const accountApi = {
 };
 
 export const dashboardApi = {
-    getStats: () => api.get('/dashboard/stats'),
-    getChartData: (days) => api.get('/dashboard/chart', { params: { days } }),
-    getDetails: (page, size, search, status) => api.get('/dashboard/details', { params: { page, size, search, status } }),
+    getStats: (campaignId) => api.get('/dashboard/stats', { params: { campaign_id: campaignId } }),
+    getChartData: (days, campaignId) => api.get('/dashboard/chart', { params: { days, campaign_id: campaignId } }),
+    getCampaigns: () => api.get('/dashboard/campaigns'),
+    getDetails: (page, size, search, status, campaignId, startTime, endTime) =>
+        api.get('/dashboard/details', {
+            params: {
+                page,
+                size,
+                search,
+                status,
+                campaign_id: campaignId,
+                start_time: startTime,
+                end_time: endTime,
+            },
+        }),
 };
 
 export default api;

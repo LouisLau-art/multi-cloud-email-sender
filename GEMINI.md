@@ -6,6 +6,7 @@ This repository contains a full-stack email marketing application designed for h
 - `AGENTS.md` and `GEMINI.md` are paired agent context files and must stay semantically synchronized.
 - Any instruction, workflow, architecture note, or command update added to one file must be mirrored to the other in the same change.
 - Before finishing a task that edits either file, verify both files remain aligned.
+- Agents should proactively use relevant skills for matching tasks instead of waiting for explicit reminders.
 
 ## 1. Development & Build Commands
 

@@ -1,19 +1,261 @@
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
-from sqlalchemy.orm import Session
-from typing import List, Optional
-from datetime import datetime
-from ..core.database import get_db
-from ..models import models
-from ..services.campaign_service import ContactService, CampaignService
-from ..services.aliyun_service import AliyunService
-from pydantic import BaseModel
-from ..core.scheduler import scheduler, send_campaign_batch
-import json
-import traceback
 import base64
-import binascii
+import json
+import logging
+from datetime import datetime
+from types import SimpleNamespace
+from typing import Optional
 
-router = APIRouter()
+from fastapi import (
+    APIRouter,
+    Cookie,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+    UploadFile,
+)
+from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from ..core.database import get_db
+from ..core.scheduler import scheduler, send_campaign_batch
+from ..core.security import (
+    ADMIN_SESSION_COOKIE,
+    build_admin_session_token,
+    decrypt_secret,
+    encrypt_secret,
+    hash_password,
+    verify_admin_session_token,
+    verify_password,
+)
+from ..models import models
+from ..services.aliyun_service import AliyunService
+from ..services.campaign_service import CampaignService, ContactService
+
+logger = logging.getLogger(__name__)
+
+public_router = APIRouter()
+
+
+def _auth_cookie_settings(request: Request) -> dict:
+    secure = request.url.scheme == "https"
+    # When frontend and backend are served from same host, Lax works and avoids
+    # browser restrictions around cross-site cookies in internal environments.
+    return {
+        "httponly": True,
+        "secure": secure,
+        "samesite": "lax",
+        "max_age": 60 * 60 * 24 * 7,
+        "path": "/",
+    }
+
+
+def _get_or_create_setting(db: Session) -> models.Setting:
+    setting = db.query(models.Setting).first()
+    if setting:
+        return setting
+    setting = models.Setting()
+    db.add(setting)
+    db.commit()
+    db.refresh(setting)
+    return setting
+
+
+def _is_bootstrapped(setting: Optional[models.Setting]) -> bool:
+    return bool(setting and setting.admin_password_hash and setting.admin_password_salt)
+
+
+def _sanitize_setting(setting: Optional[models.Setting]):
+    if not setting:
+        return None
+    return {
+        "id": setting.id,
+        "region_id": setting.region_id,
+        "tencent_region": setting.tencent_region,
+        "track_domain": setting.track_domain,
+        "from_alias": setting.from_alias,
+        "has_access_key_id": bool(setting.access_key_id),
+        "has_access_key_secret": bool(setting.access_key_secret),
+        "has_tencent_secret_id": bool(setting.tencent_secret_id),
+        "has_tencent_secret_key": bool(setting.tencent_secret_key),
+        "updated_at": setting.updated_at,
+    }
+
+
+def _decrypt_account(account: models.CloudAccount) -> models.CloudAccount:
+    if not account:
+        return account
+    return SimpleNamespace(
+        id=account.id,
+        provider=account.provider,
+        name=account.name,
+        access_key_id=account.access_key_id,
+        access_key_secret=decrypt_secret(account.access_key_secret),
+        region_id=account.region_id,
+        tencent_secret_id=account.tencent_secret_id,
+        tencent_secret_key=decrypt_secret(account.tencent_secret_key),
+        tencent_region=account.tencent_region,
+        from_alias=account.from_alias,
+        enabled=account.enabled,
+    )
+
+
+def serialize_cloud_account(account: models.CloudAccount):
+    if not account:
+        return None
+    return {
+        "id": account.id,
+        "provider": account.provider,
+        "name": account.name,
+        "access_key_id": account.access_key_id,
+        "region_id": account.region_id,
+        "tencent_secret_id": account.tencent_secret_id,
+        "tencent_region": account.tencent_region,
+        "from_alias": account.from_alias,
+        "enabled": bool(account.enabled),
+        "has_access_key_secret": bool(account.access_key_secret),
+        "has_tencent_secret_key": bool(account.tencent_secret_key),
+        "created_at": account.created_at,
+        "updated_at": account.updated_at,
+    }
+
+
+def _resolve_active_cloud_account_or_400(
+    db: Session, account_id: Optional[int], provider: str
+) -> models.CloudAccount:
+    provider = (provider or "").lower().strip()
+    if account_id:
+        account = (
+            db.query(models.CloudAccount)
+            .filter(models.CloudAccount.id == account_id)
+            .first()
+        )
+        if not account:
+            raise HTTPException(status_code=400, detail="Cloud account not found")
+        if account.provider != provider:
+            raise HTTPException(
+                status_code=400,
+                detail="Template/provider/account mismatch",
+            )
+        if not account.enabled:
+            raise HTTPException(status_code=400, detail="Cloud account is disabled")
+        return account
+
+    accounts = (
+        db.query(models.CloudAccount)
+        .filter(
+            models.CloudAccount.provider == provider,
+            models.CloudAccount.enabled.isnot(False),
+        )
+        .order_by(models.CloudAccount.id.asc())
+        .all()
+    )
+    if len(accounts) == 1:
+        return accounts[0]
+    if len(accounts) > 1:
+        raise HTTPException(status_code=400, detail="Please select cloud account")
+    raise HTTPException(status_code=400, detail="Cloud account not configured")
+
+
+def try_decode_base64(s: str):
+    if not s or len(s) < 4:
+        return s
+    try:
+        decoded_bytes = base64.b64decode(s.strip(), validate=False)
+        return decoded_bytes.decode("utf-8")
+    except Exception:
+        return s
+
+
+def require_admin_session(
+    db: Session = Depends(get_db),
+    session_token: Optional[str] = Cookie(default=None, alias=ADMIN_SESSION_COOKIE),
+):
+    setting = db.query(models.Setting).first()
+    if not _is_bootstrapped(setting):
+        raise HTTPException(status_code=401, detail="Admin password not initialized")
+    if not verify_admin_session_token(session_token, setting.admin_password_hash):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    return True
+
+
+router = APIRouter(dependencies=[Depends(require_admin_session)])
+
+
+# --- Auth / Health (public) ---
+class AuthPayload(BaseModel):
+    password: str = Field(min_length=8, max_length=128)
+
+
+@public_router.get("/auth/status")
+def auth_status(
+    db: Session = Depends(get_db),
+    session_token: Optional[str] = Cookie(default=None, alias=ADMIN_SESSION_COOKIE),
+):
+    setting = db.query(models.Setting).first()
+    bootstrap_required = not _is_bootstrapped(setting)
+    authenticated = False
+    if not bootstrap_required and setting:
+        authenticated = verify_admin_session_token(session_token, setting.admin_password_hash)
+    return {
+        "bootstrap_required": bootstrap_required,
+        "authenticated": authenticated,
+    }
+
+
+@public_router.post("/auth/bootstrap")
+def bootstrap_auth(payload: AuthPayload, request: Request, response: Response, db: Session = Depends(get_db)):
+    setting = _get_or_create_setting(db)
+    if _is_bootstrapped(setting):
+        raise HTTPException(status_code=409, detail="Already initialized")
+    password_hash, salt = hash_password(payload.password)
+    setting.admin_password_hash = password_hash
+    setting.admin_password_salt = salt
+    db.commit()
+
+    response.set_cookie(
+        key=ADMIN_SESSION_COOKIE,
+        value=build_admin_session_token(password_hash),
+        **_auth_cookie_settings(request),
+    )
+    return {"status": "ok"}
+
+
+@public_router.post("/auth/login")
+def login_auth(payload: AuthPayload, request: Request, response: Response, db: Session = Depends(get_db)):
+    setting = db.query(models.Setting).first()
+    if not _is_bootstrapped(setting):
+        raise HTTPException(status_code=400, detail="Admin password not initialized")
+    if not verify_password(payload.password, setting.admin_password_hash, setting.admin_password_salt):
+        raise HTTPException(status_code=401, detail="Wrong password")
+
+    response.set_cookie(
+        key=ADMIN_SESSION_COOKIE,
+        value=build_admin_session_token(setting.admin_password_hash),
+        **_auth_cookie_settings(request),
+    )
+    return {"status": "ok"}
+
+
+@public_router.post("/auth/logout")
+def logout_auth(response: Response):
+    response.delete_cookie(key=ADMIN_SESSION_COOKIE, path="/")
+    return {"status": "ok"}
+
+
+@public_router.get("/healthz")
+def healthz():
+    return {"status": "ok", "scheduler_running": scheduler.running}
+
+
+@public_router.get("/readyz")
+def readyz(db: Session = Depends(get_db)):
+    db.execute(text("SELECT 1"))
+    return {"status": "ready"}
 
 
 # --- Pydantic Models ---
@@ -67,13 +309,13 @@ class SavedReplyToCreate(BaseModel):
 
 
 class TemplateImport(BaseModel):
-    provider: str  # 'aliyun' or 'tencent'
+    provider: str
     template_id: str
     account_id: Optional[int] = None
 
 
 class CloudAccountCreate(BaseModel):
-    provider: str  # 'aliyun' or 'tencent'
+    provider: str
     name: str
     access_key_id: Optional[str] = None
     access_key_secret: Optional[str] = None
@@ -97,103 +339,25 @@ class CloudAccountUpdate(BaseModel):
     enabled: Optional[bool] = None
 
 
-# --- Utils ---
-def try_decode_base64(s):
-    """尝试解码 Base64 字符串，处理填充和编码异常"""
-    if not s or len(s) < 4:
-        return s
-    try:
-        # 预处理：去掉空白字符，处理填充
-        s = s.strip()
-        # 尝试解码
-        decoded_bytes = base64.b64decode(s, validate=False)
-        return decoded_bytes.decode("utf-8")
-    except:
-        return s
-
-
-def serialize_cloud_account(account: models.CloudAccount):
-    if not account:
-        return None
-    return {
-        "id": account.id,
-        "provider": account.provider,
-        "name": account.name,
-        "access_key_id": account.access_key_id,
-        "region_id": account.region_id,
-        "tencent_secret_id": account.tencent_secret_id,
-        "tencent_region": account.tencent_region,
-        "from_alias": account.from_alias,
-        "enabled": bool(account.enabled),
-        "has_access_key_secret": bool(account.access_key_secret),
-        "has_tencent_secret_key": bool(account.tencent_secret_key),
-        "created_at": account.created_at,
-        "updated_at": account.updated_at,
-    }
-
-
-def get_active_cloud_account_or_400(
-    db: Session, account_id: Optional[int], provider: str
-) -> models.CloudAccount:
-    provider = (provider or "").lower().strip()
-    account = None
-    if account_id:
-        account = (
-            db.query(models.CloudAccount)
-            .filter(models.CloudAccount.id == account_id)
-            .first()
-        )
-        if not account:
-            raise HTTPException(status_code=400, detail="Cloud account not found")
-        if account.provider != provider:
-            raise HTTPException(
-                status_code=400, detail="Template/provider/account mismatch"
-            )
-        if not account.enabled:
-            raise HTTPException(status_code=400, detail="Cloud account is disabled")
-        return account
-
-    # Legacy fallback mode: only if provider has exactly one enabled account.
-    accounts = (
-        db.query(models.CloudAccount)
-        .filter(
-            models.CloudAccount.provider == provider,
-            models.CloudAccount.enabled.isnot(False),
-        )
-        .order_by(models.CloudAccount.id.asc())
-        .all()
-    )
-    if len(accounts) == 1:
-        return accounts[0]
-    if len(accounts) > 1:
-        raise HTTPException(status_code=400, detail="Please select cloud account")
-    raise HTTPException(status_code=400, detail="Cloud account not configured")
-
-
-# --- Routes ---
-
-
+# --- Protected Routes ---
 @router.post("/settings")
 def update_settings(setting: SettingUpdate, db: Session = Depends(get_db)):
-    existing = db.query(models.Setting).first()
-    if not existing:
-        existing = models.Setting()
-        db.add(existing)
+    existing = _get_or_create_setting(db)
 
     if setting.access_key_id is not None:
-        existing.access_key_id = setting.access_key_id
+        existing.access_key_id = setting.access_key_id.strip()
     if setting.access_key_secret is not None:
-        existing.access_key_secret = setting.access_key_secret
+        existing.access_key_secret = encrypt_secret(setting.access_key_secret)
     if setting.region_id is not None:
         existing.region_id = setting.region_id
     if setting.tencent_secret_id is not None:
-        existing.tencent_secret_id = setting.tencent_secret_id
+        existing.tencent_secret_id = setting.tencent_secret_id.strip()
     if setting.tencent_secret_key is not None:
-        existing.tencent_secret_key = setting.tencent_secret_key
+        existing.tencent_secret_key = encrypt_secret(setting.tencent_secret_key)
     if setting.tencent_region is not None:
         existing.tencent_region = setting.tencent_region
     if setting.track_domain is not None:
-        existing.track_domain = setting.track_domain
+        existing.track_domain = setting.track_domain.strip()
     if setting.from_alias is not None:
         existing.from_alias = setting.from_alias
 
@@ -203,7 +367,7 @@ def update_settings(setting: SettingUpdate, db: Session = Depends(get_db)):
 
 @router.get("/settings")
 def get_settings(db: Session = Depends(get_db)):
-    return db.query(models.Setting).first()
+    return _sanitize_setting(db.query(models.Setting).first())
 
 
 @router.get("/accounts")
@@ -237,10 +401,10 @@ def create_cloud_account(data: CloudAccountCreate, db: Session = Depends(get_db)
         provider=provider,
         name=(data.name or "").strip() or f"{provider}-account",
         access_key_id=data.access_key_id,
-        access_key_secret=data.access_key_secret,
+        access_key_secret=encrypt_secret(data.access_key_secret),
         region_id=data.region_id or "cn-hangzhou",
         tencent_secret_id=data.tencent_secret_id,
-        tencent_secret_key=data.tencent_secret_key,
+        tencent_secret_key=encrypt_secret(data.tencent_secret_key),
         tencent_region=data.tencent_region or "ap-hongkong",
         from_alias=data.from_alias,
         enabled=data.enabled,
@@ -264,15 +428,15 @@ def update_cloud_account(
     if data.name is not None:
         account.name = data.name.strip() or account.name
     if data.access_key_id is not None:
-        account.access_key_id = data.access_key_id
+        account.access_key_id = data.access_key_id.strip()
     if data.access_key_secret is not None and data.access_key_secret != "":
-        account.access_key_secret = data.access_key_secret
+        account.access_key_secret = encrypt_secret(data.access_key_secret)
     if data.region_id is not None:
         account.region_id = data.region_id
     if data.tencent_secret_id is not None:
-        account.tencent_secret_id = data.tencent_secret_id
+        account.tencent_secret_id = data.tencent_secret_id.strip()
     if data.tencent_secret_key is not None and data.tencent_secret_key != "":
-        account.tencent_secret_key = data.tencent_secret_key
+        account.tencent_secret_key = encrypt_secret(data.tencent_secret_key)
     if data.tencent_region is not None:
         account.tencent_region = data.tencent_region
     if data.from_alias is not None:
@@ -280,11 +444,13 @@ def update_cloud_account(
     if data.enabled is not None:
         account.enabled = data.enabled
 
+    # Validate using decrypted values for backward compatibility.
+    decrypted = _decrypt_account(account)
     if account.provider == "aliyun":
-        if not account.access_key_id or not account.access_key_secret:
+        if not account.access_key_id or not decrypted.access_key_secret:
             raise HTTPException(status_code=400, detail="Aliyun access key is required")
     if account.provider == "tencent":
-        if not account.tencent_secret_id or not account.tencent_secret_key:
+        if not account.tencent_secret_id or not decrypted.tencent_secret_key:
             raise HTTPException(status_code=400, detail="Tencent secret is required")
 
     db.commit()
@@ -325,17 +491,23 @@ async def upload_contacts(
     db: Session = Depends(get_db),
 ):
     content = await file.read()
+    if len(content) > 50 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="CSV 文件过大，最大 50MB")
     try:
         contact_list = ContactService.process_csv(db, content, list_name)
         return {"id": contact_list.id, "count": contact_list.total_count}
     except Exception as e:
-        print(f"Upload Error Detail: {traceback.format_exc()}")
+        logger.exception("contacts/upload failed")
         raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/contacts")
 def get_contact_lists(db: Session = Depends(get_db)):
-    return db.query(models.ContactList).all()
+    return (
+        db.query(models.ContactList)
+        .order_by(models.ContactList.created_at.desc(), models.ContactList.id.desc())
+        .all()
+    )
 
 
 @router.delete("/contacts/{id}")
@@ -358,7 +530,7 @@ def create_template(template: TemplateCreate, db: Session = Depends(get_db)):
 
     account_id = template.account_id
     if provider in {"aliyun", "tencent"}:
-        account = get_active_cloud_account_or_400(db, account_id, provider)
+        account = _resolve_active_cloud_account_or_400(db, account_id, provider)
         account_id = account.id
     else:
         account_id = None
@@ -395,7 +567,7 @@ def update_template(id: int, template: TemplateUpdate, db: Session = Depends(get
             raise HTTPException(status_code=400, detail="Unknown provider")
         db_template.provider = provider
         if provider in {"aliyun", "tencent"}:
-            account = get_active_cloud_account_or_400(db, template.account_id, provider)
+            account = _resolve_active_cloud_account_or_400(db, template.account_id, provider)
             db_template.account_id = account.id
         else:
             db_template.account_id = None
@@ -415,7 +587,6 @@ def get_templates(
     if account_id is not None:
         query = query.filter(models.EmailTemplate.account_id == account_id)
     templates = query.order_by(models.EmailTemplate.id.asc()).all()
-    # 确保返回给前端的是解码后的内容 (尤其是从云端同步回来的 Base64 模板)
     for t in templates:
         t.body = try_decode_base64(t.body)
     account_map = {
@@ -445,12 +616,35 @@ def get_templates(
     return result
 
 
+@router.delete("/templates/{id}")
+def delete_template(id: int, db: Session = Depends(get_db)):
+    template = db.query(models.EmailTemplate).filter(models.EmailTemplate.id == id).first()
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    referenced_campaigns = (
+        db.query(models.Campaign)
+        .filter(models.Campaign.template_id == id)
+        .count()
+    )
+    if referenced_campaigns > 0:
+        raise HTTPException(
+            status_code=400,
+            detail="Template is referenced by campaigns and cannot be deleted",
+        )
+
+    db.delete(template)
+    db.commit()
+    return {"status": "deleted"}
+
+
 @router.post("/templates/import")
 def import_template(data: TemplateImport, db: Session = Depends(get_db)):
     provider = (data.provider or "").lower().strip()
     if provider not in {"aliyun", "tencent"}:
         raise HTTPException(status_code=400, detail="Unknown provider")
-    account = get_active_cloud_account_or_400(db, data.account_id, provider)
+    account = _resolve_active_cloud_account_or_400(db, data.account_id, provider)
+    account = _decrypt_account(account)
     setting = db.query(models.Setting).first()
 
     try:
@@ -463,8 +657,7 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
             title = detail.template_name
             subject = detail.template_subject
             body = detail.template_text
-
-        elif provider == "tencent":
+        else:
             from ..services.tencent_service import TencentService
 
             client = TencentService.create_client(
@@ -485,8 +678,6 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
                 detail_content.get("Html") or detail_content.get("Text") or "No Content"
             )
             body = try_decode_base64(raw_body)
-        else:
-            raise HTTPException(status_code=400, detail="Unknown provider")
 
         existing = (
             db.query(models.EmailTemplate)
@@ -504,8 +695,9 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
             existing.body = body
             db.commit()
             return {"message": "模板已更新", "title": title}
-        else:
-            new_t = models.EmailTemplate(
+
+        db.add(
+            models.EmailTemplate(
                 title=title,
                 subject=subject,
                 body=body,
@@ -514,11 +706,11 @@ def import_template(data: TemplateImport, db: Session = Depends(get_db)):
                 provider_id=data.template_id,
                 account_id=account.id,
             )
-            db.add(new_t)
-            db.commit()
-            return {"message": "模板已导入", "title": title}
+        )
+        db.commit()
+        return {"message": "模板已导入", "title": title}
     except Exception as e:
-        print(f"Import Error: {traceback.format_exc()}")
+        logger.exception("templates/import failed")
         raise HTTPException(status_code=500, detail=f"导入失败: {str(e)}")
 
 
@@ -547,6 +739,7 @@ def sync_templates(
         return {"message": "未配置可用云账号，无法同步"}
 
     for account in accounts:
+        account = _decrypt_account(account)
         if account.provider == "aliyun":
             if not account.access_key_id or not account.access_key_secret:
                 messages.append(f"{account.name}: 缺少阿里云密钥，已跳过")
@@ -595,80 +788,81 @@ def sync_templates(
                             )
                 messages.append(f"{account.name}: 阿里云同步 {count} 个")
             except Exception:
-                print(f"Aliyun Sync Error ({account.name}): {traceback.format_exc()}")
+                logger.exception("Aliyun template sync failed for %s", account.name)
                 messages.append(f"{account.name}: 阿里云同步失败")
             continue
 
-        if account.provider == "tencent":
-            if not account.tencent_secret_id or not account.tencent_secret_key:
-                messages.append(f"{account.name}: 缺少腾讯云密钥，已跳过")
-                continue
-            try:
-                from ..services.tencent_service import TencentService
+        if not account.tencent_secret_id or not account.tencent_secret_key:
+            messages.append(f"{account.name}: 缺少腾讯云密钥，已跳过")
+            continue
+        try:
+            from ..services.tencent_service import TencentService
 
-                client = TencentService.create_client(
-                    account.tencent_secret_id,
-                    account.tencent_secret_key,
-                    account.tencent_region,
-                )
-                res = TencentService.query_templates(client)
-                data = json.loads(res.to_json_string())
-                templates_list = data.get("TemplatesMetadata", [])
-                count = 0
-                for t in templates_list:
-                    template_id = t.get("TemplateID")
-                    template_name = t.get("TemplateName")
-                    try:
-                        detail_res = TencentService.get_template(client, template_id)
-                        detail_data = json.loads(detail_res.to_json_string())
-                        detail_content = detail_data.get("TemplateContent", {})
-                        subject = detail_content.get("TemplateSubject", template_name)
-                        raw_body = (
-                            detail_content.get("Html")
-                            or detail_content.get("Text")
-                            or "No Content"
+            client = TencentService.create_client(
+                account.tencent_secret_id,
+                account.tencent_secret_key,
+                account.tencent_region,
+            )
+            res = TencentService.query_templates(client)
+            data = json.loads(res.to_json_string())
+            templates_list = data.get("TemplatesMetadata", [])
+            count = 0
+            for t in templates_list:
+                template_id = t.get("TemplateID")
+                template_name = t.get("TemplateName")
+                try:
+                    detail_res = TencentService.get_template(client, template_id)
+                    detail_data = json.loads(detail_res.to_json_string())
+                    detail_content = detail_data.get("TemplateContent", {})
+                    subject = detail_content.get("TemplateSubject", template_name)
+                    raw_body = (
+                        detail_content.get("Html")
+                        or detail_content.get("Text")
+                        or "No Content"
+                    )
+                    body = try_decode_base64(raw_body)
+                    existing = (
+                        db.query(models.EmailTemplate)
+                        .filter(
+                            models.EmailTemplate.provider == "tencent",
+                            models.EmailTemplate.provider_id == str(template_id),
+                            models.EmailTemplate.account_id == account.id,
                         )
-                        body = try_decode_base64(raw_body)
-                        existing = (
-                            db.query(models.EmailTemplate)
-                            .filter(
-                                models.EmailTemplate.provider == "tencent",
-                                models.EmailTemplate.provider_id == str(template_id),
-                                models.EmailTemplate.account_id == account.id,
+                        .first()
+                    )
+                    if not existing:
+                        db.add(
+                            models.EmailTemplate(
+                                title=template_name,
+                                subject=subject,
+                                body=body,
+                                from_alias=account.from_alias
+                                or (setting.from_alias if setting else None),
+                                provider="tencent",
+                                provider_id=str(template_id),
+                                account_id=account.id,
                             )
-                            .first()
                         )
-                        if not existing:
-                            db.add(
-                                models.EmailTemplate(
-                                    title=template_name,
-                                    subject=subject,
-                                    body=body,
-                                    from_alias=account.from_alias
-                                    or (setting.from_alias if setting else None),
-                                    provider="tencent",
-                                    provider_id=str(template_id),
-                                    account_id=account.id,
-                                )
-                            )
-                            count += 1
-                        else:
-                            existing.title = template_name
-                            existing.subject = subject
-                            existing.body = body
-                            existing.from_alias = (
-                                existing.from_alias
-                                or account.from_alias
-                                or (setting.from_alias if setting else None)
-                            )
-                    except Exception as e:
-                        print(
-                            f"Failed to get details for template {template_id} ({account.name}): {e}"
+                        count += 1
+                    else:
+                        existing.title = template_name
+                        existing.subject = subject
+                        existing.body = body
+                        existing.from_alias = (
+                            existing.from_alias
+                            or account.from_alias
+                            or (setting.from_alias if setting else None)
                         )
-                messages.append(f"{account.name}: 腾讯云同步 {count} 个")
-            except Exception:
-                print(f"Tencent Sync Error ({account.name}): {traceback.format_exc()}")
-                messages.append(f"{account.name}: 腾讯云同步失败")
+                except Exception:
+                    logger.exception(
+                        "Failed to fetch Tencent template detail template_id=%s account=%s",
+                        template_id,
+                        account.name,
+                    )
+            messages.append(f"{account.name}: 腾讯云同步 {count} 个")
+        except Exception:
+            logger.exception("Tencent template sync failed for %s", account.name)
+            messages.append(f"{account.name}: 腾讯云同步失败")
 
     db.commit()
     return {"message": " | ".join(messages)}
@@ -695,6 +889,7 @@ def sync_senders(
         return []
     senders = []
     for account in accounts:
+        account = _decrypt_account(account)
         if account.provider == "aliyun":
             if not account.access_key_id or not account.access_key_secret:
                 continue
@@ -721,45 +916,41 @@ def sync_senders(
                             }
                         )
             except Exception:
-                print(f"Aliyun Senders Error ({account.name}): {traceback.format_exc()}")
+                logger.exception("Aliyun senders sync failed for %s", account.name)
             continue
 
-        if account.provider == "tencent":
-            if not account.tencent_secret_id or not account.tencent_secret_key:
-                continue
-            try:
-                from ..services.tencent_service import TencentService
+        if not account.tencent_secret_id or not account.tencent_secret_key:
+            continue
+        try:
+            from ..services.tencent_service import TencentService
 
-                client = TencentService.create_client(
-                    account.tencent_secret_id,
-                    account.tencent_secret_key,
-                    account.tencent_region,
-                )
-                res = TencentService.query_senders(client)
-                data = json.loads(res.to_json_string())
-                if "EmailIdentities" in data and data["EmailIdentities"]:
-                    for identity in data["EmailIdentities"]:
-                        email = identity.get("IdentityName")
-                        senders.append(
-                            {
-                                "email": email,
-                                "provider": "tencent",
-                                "status": "已验证",
-                                "label": f"[腾讯云][{account.name}] {email}",
-                                "account_id": account.id,
-                                "account_label": account.name,
-                            }
-                        )
-            except Exception:
-                print(
-                    f"Tencent Senders Error Detail ({account.name}): {traceback.format_exc()}"
-                )
+            client = TencentService.create_client(
+                account.tencent_secret_id,
+                account.tencent_secret_key,
+                account.tencent_region,
+            )
+            res = TencentService.query_senders(client)
+            data = json.loads(res.to_json_string())
+            if "EmailIdentities" in data and data["EmailIdentities"]:
+                for identity in data["EmailIdentities"]:
+                    email = identity.get("IdentityName")
+                    senders.append(
+                        {
+                            "email": email,
+                            "provider": "tencent",
+                            "status": "已验证",
+                            "label": f"[腾讯云][{account.name}] {email}",
+                            "account_id": account.id,
+                            "account_label": account.name,
+                        }
+                    )
+        except Exception:
+            logger.exception("Tencent senders sync failed for %s", account.name)
     return senders
 
 
 @router.post("/campaigns")
 def create_campaign(campaign: CampaignCreate, db: Session = Depends(get_db)):
-    print(f"Creating campaign with data: {campaign}")
     return CampaignService.create_campaign(
         db,
         campaign.name,
@@ -778,7 +969,6 @@ def create_campaign(campaign: CampaignCreate, db: Session = Depends(get_db)):
     )
 
 
-# --- Saved Reply-To Endpoints ---
 @router.get("/settings/reply_tos")
 def get_saved_reply_tos(db: Session = Depends(get_db)):
     return (
@@ -807,7 +997,11 @@ def add_saved_reply_to(data: SavedReplyToCreate, db: Session = Depends(get_db)):
 
 @router.get("/campaigns")
 def get_campaigns(db: Session = Depends(get_db)):
-    campaigns = db.query(models.Campaign).order_by(models.Campaign.id.desc()).all()
+    campaigns = (
+        db.query(models.Campaign)
+        .order_by(models.Campaign.created_at.desc(), models.Campaign.id.desc())
+        .all()
+    )
     account_ids = [c.account_id for c in campaigns if c.account_id]
     account_map = {
         row.id: row
@@ -851,27 +1045,28 @@ def start_campaign(id: int, db: Session = Depends(get_db)):
     campaign = db.query(models.Campaign).filter(models.Campaign.id == id).first()
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    if (
-        campaign.scheduled_start_time
-        and campaign.scheduled_start_time > datetime.utcnow()
-    ):
+
+    if campaign.scheduled_start_time and campaign.scheduled_start_time > datetime.utcnow():
         campaign.status = "scheduled"
         db.commit()
         return {"status": "scheduled", "start_time": campaign.scheduled_start_time}
-    else:
-        campaign.status = "sending"
+
+    campaign.status = "sending"
+    db.commit()
+    try:
+        scheduler.add_job(
+            send_campaign_batch,
+            "date",
+            run_date=datetime.now(),
+            id=f"campaign_start_{id}",
+            replace_existing=True,
+        )
+    except Exception as e:
+        campaign.status = "error"
         db.commit()
-        try:
-            scheduler.add_job(
-                send_campaign_batch,
-                "date",
-                run_date=datetime.now(),
-                id=f"campaign_start_{id}",
-                replace_existing=True,
-            )
-        except Exception as e:
-            print(f"Trigger error: {e}")
-        return {"status": "started"}
+        logger.exception("Trigger campaign failed id=%s", id)
+        raise HTTPException(status_code=500, detail=f"Failed to start campaign: {e}")
+    return {"status": "started"}
 
 
 @router.post("/campaigns/{id}/stop")

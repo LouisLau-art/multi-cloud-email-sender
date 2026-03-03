@@ -1,4 +1,5 @@
 from sqlalchemy import text
+from .security import encrypt_secret
 
 
 def _table_exists(conn, table_name: str) -> bool:
@@ -20,6 +21,8 @@ def _column_exists(conn, table_name: str, column_name: str) -> bool:
 
 
 def _add_column_if_missing(conn, table_name: str, column_name: str, column_sql: str) -> None:
+    if not _table_exists(conn, table_name):
+        return
     if _column_exists(conn, table_name, column_name):
         return
     conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_sql}"))
@@ -176,6 +179,18 @@ def run_startup_migrations(engine) -> None:
             "track_domain",
             "track_domain VARCHAR DEFAULT 'http://192.168.2.8:8000'",
         )
+        _add_column_if_missing(
+            conn,
+            "settings",
+            "admin_password_hash",
+            "admin_password_hash VARCHAR",
+        )
+        _add_column_if_missing(
+            conn,
+            "settings",
+            "admin_password_salt",
+            "admin_password_salt VARCHAR",
+        )
 
         # campaigns.track_opens / track_clicks
         _add_column_if_missing(
@@ -205,12 +220,69 @@ def run_startup_migrations(engine) -> None:
             "provider",
             "provider VARCHAR",
         )
+        _add_column_if_missing(
+            conn,
+            "campaign_recipients",
+            "name_snapshot",
+            "name_snapshot VARCHAR",
+        )
+        _add_column_if_missing(
+            conn,
+            "campaign_recipients",
+            "first_name_snapshot",
+            "first_name_snapshot VARCHAR",
+        )
+        _add_column_if_missing(
+            conn,
+            "campaign_recipients",
+            "middle_name_snapshot",
+            "middle_name_snapshot VARCHAR",
+        )
+        _add_column_if_missing(
+            conn,
+            "campaign_recipients",
+            "last_name_snapshot",
+            "last_name_snapshot VARCHAR",
+        )
+        _add_column_if_missing(
+            conn,
+            "campaign_recipients",
+            "extra_vars_snapshot",
+            "extra_vars_snapshot TEXT",
+        )
+        _add_column_if_missing(
+            conn,
+            "campaign_recipients",
+            "send_order",
+            "send_order INTEGER",
+        )
         if _table_exists(conn, "campaign_recipients"):
+            conn.execute(
+                text(
+                    "UPDATE campaign_recipients "
+                    "SET status='pending' "
+                    "WHERE status IS NULL OR TRIM(status)=''"
+                )
+            )
             conn.execute(
                 text(
                     "CREATE INDEX IF NOT EXISTS "
                     "ix_campaign_recipients_message_id "
                     "ON campaign_recipients (message_id)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "ix_campaign_recipients_send_order "
+                    "ON campaign_recipients (send_order)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS "
+                    "ix_campaign_recipients_campaign_status "
+                    "ON campaign_recipients (campaign_id, status)"
                 )
             )
 
@@ -294,5 +366,79 @@ def run_startup_migrations(engine) -> None:
             )
         )
 
+        # contacts name parts
+        _add_column_if_missing(
+            conn,
+            "contacts",
+            "first_name",
+            "first_name VARCHAR",
+        )
+        _add_column_if_missing(
+            conn,
+            "contacts",
+            "middle_name",
+            "middle_name VARCHAR",
+        )
+        _add_column_if_missing(
+            conn,
+            "contacts",
+            "last_name",
+            "last_name VARCHAR",
+        )
+
         _ensure_legacy_accounts_from_settings(conn)
         _backfill_account_links(conn)
+
+        # Encrypt legacy plaintext secrets in-place.
+        if _table_exists(conn, "settings"):
+            row = _query_one_mapping(
+                conn,
+                "SELECT id, access_key_secret, tencent_secret_key FROM settings ORDER BY id LIMIT 1",
+            )
+            if row:
+                updates = {}
+                if row.get("access_key_secret"):
+                    updates["access_key_secret"] = encrypt_secret(row["access_key_secret"])
+                if row.get("tencent_secret_key"):
+                    updates["tencent_secret_key"] = encrypt_secret(row["tencent_secret_key"])
+                if updates:
+                    conn.execute(
+                        text(
+                            "UPDATE settings "
+                            "SET access_key_secret=:access_key_secret, "
+                            "tencent_secret_key=:tencent_secret_key "
+                            "WHERE id=:id"
+                        ),
+                        {
+                            "id": row["id"],
+                            "access_key_secret": updates.get(
+                                "access_key_secret", row.get("access_key_secret")
+                            ),
+                            "tencent_secret_key": updates.get(
+                                "tencent_secret_key", row.get("tencent_secret_key")
+                            ),
+                        },
+                    )
+
+        if _table_exists(conn, "cloud_accounts"):
+            rows = conn.execute(
+                text(
+                    "SELECT id, access_key_secret, tencent_secret_key FROM cloud_accounts"
+                )
+            ).mappings().all()
+            for row in rows:
+                encrypted_ak = encrypt_secret(row.get("access_key_secret"))
+                encrypted_tk = encrypt_secret(row.get("tencent_secret_key"))
+                conn.execute(
+                    text(
+                        "UPDATE cloud_accounts "
+                        "SET access_key_secret=:access_key_secret, "
+                        "tencent_secret_key=:tencent_secret_key "
+                        "WHERE id=:id"
+                    ),
+                    {
+                        "id": row["id"],
+                        "access_key_secret": encrypted_ak,
+                        "tencent_secret_key": encrypted_tk,
+                    },
+                )

@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal, Tabs, Divider, Space, Radio, Empty, Switch } from 'antd';
+import { Layout, Menu, theme, Card, Form, Input, Button, Upload, message, Table, Select, Tag, Progress, Statistic, Popconfirm, DatePicker, Row, Col, Modal, Tabs, Divider, Space, Radio, Empty, Switch, InputNumber, Spin } from 'antd';
 import { UploadOutlined, UserOutlined, MailOutlined, SettingOutlined, RocketOutlined, EditOutlined, DeleteOutlined, PlusOutlined, PieChartOutlined, CheckCircleOutlined, SyncOutlined, CloseCircleOutlined, EyeOutlined, DownloadOutlined } from '@ant-design/icons';
 import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as ChartTooltip, Legend, ResponsiveContainer } from 'recharts';
-import api, { contactApi, settingsApi, dashboardApi, accountApi } from './services/api';
+import DOMPurify from 'dompurify';
+import api, { authApi, contactApi, settingsApi, dashboardApi, accountApi } from './services/api';
 import dayjs from 'dayjs';
 
 const { Header, Content, Sider } = Layout;
@@ -11,212 +12,329 @@ const { TextArea } = Input;
 
 // --- Dashboard Component ---
 const Dashboard = () => {
-    const [stats, setStats] = useState(null);
-    const [chartData, setChartData] = useState([]);
-    const [details, setDetails] = useState({ items: [], total: 0, page: 1, size: 10 });
-    const [loading, setLoading] = useState(false);
-    const [chartRange, setChartRange] = useState(7); // Days
-    const [detailFilter, setDetailFilter] = useState('all'); // all, sent, failed, opened, clicked
-    const [searchText, setSearchText] = useState('');
+  const [stats, setStats] = useState(null);
+  const [chartData, setChartData] = useState([]);
+  const [campaignSummaries, setCampaignSummaries] = useState([]);
+  const [selectedCampaignId, setSelectedCampaignId] = useState(undefined);
+  const [details, setDetails] = useState({ items: [], total: 0, page: 1, size: 10 });
+  const [loading, setLoading] = useState(false);
+  const [chartRange, setChartRange] = useState(7); // Days
+  const [detailFilter, setDetailFilter] = useState('all'); // all, sent, failed, opened, clicked
+  const [searchText, setSearchText] = useState('');
+  const [timeRange, setTimeRange] = useState(null);
+  const [exportScope, setExportScope] = useState('all'); // all, page
 
-    useEffect(() => {
-        loadStats();
-        loadChart();
-        loadDetails(1, 10, searchText, detailFilter);
-    }, []);
+  const showBackendConnectionError = (error) => {
+    console.error('Dashboard API request failed:', error);
+    message.error({
+      key: 'dashboard-connection-error',
+      content: '无法连接后端服务（http://localhost:8000）。请先启动后端。',
+      duration: 3,
+    });
+  };
 
-    useEffect(() => {
-        loadChart();
-    }, [chartRange]);
+  const loadCampaigns = () => {
+    dashboardApi.getCampaigns()
+      .then((res) => setCampaignSummaries(res.data || []))
+      .catch((error) => {
+        setCampaignSummaries([]);
+        showBackendConnectionError(error);
+      });
+  };
 
-    useEffect(() => {
-        loadDetails(1, 10, searchText, detailFilter);
-    }, [detailFilter]); // Search triggers manually
-
-    const showBackendConnectionError = (error) => {
-        console.error('Dashboard API request failed:', error);
-        message.error({
-            key: 'dashboard-connection-error',
-            content: '无法连接后端服务（http://localhost:8000）。请先启动后端。',
-            duration: 3,
+  const loadStats = (campaignId = selectedCampaignId) => {
+    dashboardApi.getStats(campaignId)
+      .then((res) => setStats(res.data))
+      .catch((error) => {
+        setStats({
+          total_recipients: 0,
+          sent_count: 0,
+          delivery_rate: 0,
+          delivered_count: 0,
+          opened_count: 0,
+          open_rate: 0,
+          clicked_count: 0,
+          click_rate: 0,
         });
+        showBackendConnectionError(error);
+      });
+  };
+
+  const loadChart = (days = chartRange, campaignId = selectedCampaignId) => {
+    dashboardApi.getChartData(days, campaignId)
+      .then((res) => setChartData(res.data))
+      .catch((error) => {
+        setChartData([]);
+        showBackendConnectionError(error);
+      });
+  };
+
+  const getSentTimeRangeParams = (range = timeRange) => {
+    if (!range || range.length !== 2 || !range[0] || !range[1]) {
+      return { startTime: null, endTime: null };
+    }
+    return {
+      startTime: range[0].startOf('day').toISOString(),
+      endTime: range[1].endOf('day').toISOString(),
     };
+  };
 
-    const loadStats = () => {
-        dashboardApi.getStats()
-            .then(res => setStats(res.data))
-            .catch((error) => {
-                setStats({
-                    total_recipients: 0,
-                    sent_count: 0,
-                    delivery_rate: 0,
-                    delivered_count: 0,
-                    opened_count: 0,
-                    open_rate: 0,
-                    clicked_count: 0,
-                    click_rate: 0,
-                });
-                showBackendConnectionError(error);
-            });
-    };
+  const loadDetails = (page, size, search, status, campaignId = selectedCampaignId, range = timeRange) => {
+    setLoading(true);
+    const statusParam = status === 'all' ? null : status;
+    const { startTime, endTime } = getSentTimeRangeParams(range);
+    dashboardApi.getDetails(page, size, search, statusParam, campaignId, startTime, endTime)
+      .then((res) => {
+        setDetails(res.data);
+      })
+      .catch((error) => {
+        setDetails({ items: [], total: 0, page, size });
+        showBackendConnectionError(error);
+      })
+      .finally(() => {
+        setLoading(false);
+      });
+  };
 
-    const loadChart = () => {
-        dashboardApi.getChartData(chartRange)
-            .then(res => setChartData(res.data))
-            .catch((error) => {
-                setChartData([]);
-                showBackendConnectionError(error);
-            });
-    };
+  useEffect(() => {
+    loadCampaigns();
+    loadStats(undefined);
+    loadChart(7, undefined);
+    loadDetails(1, 10, '', 'all', undefined, null);
+  }, []);
 
-    const loadDetails = (page, size, search, status) => {
-        setLoading(true);
-        const statusParam = status === 'all' ? null : status;
-        dashboardApi.getDetails(page, size, search, statusParam)
-            .then(res => {
-                setDetails(res.data);
-            })
-            .catch((error) => {
-                setDetails({ items: [], total: 0, page, size });
-                showBackendConnectionError(error);
-            })
-            .finally(() => {
-                setLoading(false);
-            });
-    };
+  useEffect(() => {
+    loadChart(chartRange, selectedCampaignId);
+  }, [chartRange]);
 
-    const handleSearch = (value) => {
-        setSearchText(value);
-        loadDetails(1, details.size, value, detailFilter);
-    };
+  useEffect(() => {
+    loadDetails(1, 10, searchText, detailFilter, selectedCampaignId, timeRange);
+  }, [detailFilter, timeRange]); // Search triggers manually
 
-    const handleExport = () => {
-        const baseUrl = api.defaults.baseURL.startsWith('http') ? api.defaults.baseURL : window.location.origin + api.defaults.baseURL;
-        window.open(`${baseUrl}/dashboard/export`, '_blank');
-    };
+  const handleSearch = (value) => {
+    setSearchText(value);
+    loadDetails(1, details.size, value, detailFilter, selectedCampaignId, timeRange);
+  };
 
-    const columns = [
-        { title: '邮箱地址', dataIndex: 'email', key: 'email' },
-        { 
-            title: '状态', 
-            dataIndex: 'status', 
-            key: 'status',
-            render: (text) => {
-                const map = { sent: '已发送', failed: '发送失败', opened: '已打开', clicked: '已点击', pending: '等待中' };
-                const color = { sent: 'blue', failed: 'red', opened: 'green', clicked: 'purple', pending: 'default' };
-                return <Tag color={color[text] || 'default'}>{map[text] || text}</Tag>; 
-            }
-        },
-        { 
-            title: '发送时间', 
-            dataIndex: 'sent_at', 
-            key: 'sent_at',
-            render: (t) => t ? new Date(t + 'Z').toLocaleString('zh-CN', { hour12: false }) : '-'
-        },
-        { 
-            title: '打开时间', 
-            dataIndex: 'opened_at', 
-            key: 'opened_at',
-            render: (t) => t ? new Date(t + 'Z').toLocaleString('zh-CN', { hour12: false }) : '-'
-        },
-        { 
-            title: '点击时间', 
-            dataIndex: 'clicked_at', 
-            key: 'clicked_at',
-            render: (t) => t ? new Date(t + 'Z').toLocaleString('zh-CN', { hour12: false }) : '-'
-        },
-        { title: '错误信息', dataIndex: 'error_message', key: 'error', ellipsis: true }
-    ];
+  const handleCampaignSelect = (campaignId) => {
+    const normalizedCampaignId = campaignId || undefined;
+    setSelectedCampaignId(normalizedCampaignId);
+    loadStats(normalizedCampaignId);
+    loadChart(chartRange, normalizedCampaignId);
+    loadDetails(1, details.size, searchText, detailFilter, normalizedCampaignId, timeRange);
+  };
 
-    if (!stats) return <div style={{padding: 50, textAlign: 'center'}}><SyncOutlined spin /> 加载数据中...</div>;
+  const handleExport = () => {
+    const baseUrl = api.defaults.baseURL.startsWith('http')
+      ? api.defaults.baseURL
+      : window.location.origin + api.defaults.baseURL;
+    const params = new URLSearchParams();
+    const { startTime, endTime } = getSentTimeRangeParams(timeRange);
+    if (selectedCampaignId) params.set('campaign_id', String(selectedCampaignId));
+    if (searchText) params.set('search', searchText);
+    if (detailFilter && detailFilter !== 'all') params.set('status', detailFilter);
+    if (startTime) params.set('start_time', startTime);
+    if (endTime) params.set('end_time', endTime);
+    params.set('scope', exportScope);
+    if (exportScope === 'page') {
+      params.set('page', String(details.page || 1));
+      params.set('size', String(details.size || 10));
+    }
+    const query = params.toString();
+    const exportUrl = query ? `${baseUrl}/dashboard/export?${query}` : `${baseUrl}/dashboard/export`;
+    window.open(exportUrl, '_blank');
+  };
 
-    return (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            {/* Stats Cards */}
-            <Row gutter={16}>
-                <Col span={4}>
-                    <Card>
-                        <Statistic title="收件人数" value={stats.total_recipients} prefix={<UserOutlined />} />
-                    </Card>
-                </Col>
-                <Col span={5}>
-                    <Card>
-                        <Statistic title="发送封数" value={stats.sent_count} prefix={<RocketOutlined />} suffix={<span style={{fontSize: 12, color: '#999'}}>送达率 {stats.delivery_rate}%</span>} />
-                    </Card>
-                </Col>
-                <Col span={5}>
-                    <Card>
-                        <Statistic title="送达封数" value={stats.delivered_count} prefix={<CheckCircleOutlined style={{color: 'green'}} />} />
-                    </Card>
-                </Col>
-                <Col span={5}>
-                    <Card>
-                        <Statistic title="打开封数" value={stats.opened_count} prefix={<EyeOutlined style={{color: 'orange'}} />} suffix={<span style={{fontSize: 12, color: '#999'}}>打开率 {stats.open_rate}%</span>} />
-                    </Card>
-                </Col>
-                <Col span={5}>
-                    <Card>
-                        <Statistic title="点击人数" value={stats.clicked_count} prefix={<PieChartOutlined style={{color: 'purple'}} />} suffix={<span style={{fontSize: 12, color: '#999'}}>点击率 {stats.click_rate}%</span>} />
-                    </Card>
-                </Col>
-            </Row>
+  const campaignColumns = [
+    { title: '任务名称', dataIndex: 'name', key: 'name' },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      render: (text) => {
+        const map = { pending: '等待中', sending: '发送中', completed: '已完成', paused: '已暂停', error: '错误', scheduled: '计划中' };
+        const color = { sending: 'green', completed: 'blue', pending: 'orange', paused: 'red', scheduled: 'purple', error: 'red' };
+        return <Tag color={color[text] || 'default'}>{map[text] || text}</Tag>;
+      }
+    },
+    { title: '送达', dataIndex: 'delivered_count', key: 'delivered_count' },
+    { title: '打开', dataIndex: 'opened_count', key: 'opened_count' },
+    { title: '点击', dataIndex: 'clicked_count', key: 'clicked_count' },
+    { title: '送达率', dataIndex: 'delivery_rate', key: 'delivery_rate', render: (value) => `${value}%` },
+    { title: '打开率', dataIndex: 'open_rate', key: 'open_rate', render: (value) => `${value}%` },
+    { title: '点击率', dataIndex: 'click_rate', key: 'click_rate', render: (value) => `${value}%` },
+  ];
 
-            {/* Chart */}
-            <Card title="任务效果 - 最近营销邮件表现" extra={
-                <Radio.Group value={chartRange} onChange={e => setChartRange(e.target.value)}>
-                    <Radio.Button value={1}>24小时</Radio.Button>
-                    <Radio.Button value={7}>7天</Radio.Button>
-                    <Radio.Button value={30}>30天</Radio.Button>
-                </Radio.Group>
-            }>
-                <div style={{ height: 300 }}>
-                    <ResponsiveContainer width="100%" height="100%">
-                        <LineChart data={chartData}>
-                            <CartesianGrid strokeDasharray="3 3" />
-                            <XAxis dataKey="time" />
-                            <YAxis />
-                            <ChartTooltip />
-                            <Legend />
-                            <Line type="monotone" dataKey="opened" name="打开人数" stroke="#1890ff" activeDot={{ r: 8 }} />
-                            <Line type="monotone" dataKey="clicked" name="点击人数" stroke="#722ed1" />
-                        </LineChart>
-                    </ResponsiveContainer>
-                </div>
-            </Card>
+  const detailColumns = [
+    { title: '任务名称', dataIndex: 'campaign_name', key: 'campaign_name' },
+    { title: 'First Name', dataIndex: 'first_name', key: 'first_name', render: (t) => t || '-' },
+    { title: 'Middle Name', dataIndex: 'middle_name', key: 'middle_name', render: (t) => t || '-' },
+    { title: 'Last Name', dataIndex: 'last_name', key: 'last_name', render: (t) => t || '-' },
+    { title: '邮箱地址', dataIndex: 'email', key: 'email' },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      render: (text) => {
+        const map = { sent: '已发送', failed: '发送失败', opened: '已打开', clicked: '已点击', pending: '等待中' };
+        const color = { sent: 'blue', failed: 'red', opened: 'green', clicked: 'purple', pending: 'default' };
+        return <Tag color={color[text] || 'default'}>{map[text] || text}</Tag>;
+      }
+    },
+    {
+      title: '发送时间',
+      dataIndex: 'sent_at',
+      key: 'sent_at',
+      render: (t) => t ? new Date(t + 'Z').toLocaleString('zh-CN', { hour12: false }) : '-'
+    },
+    {
+      title: '打开时间',
+      dataIndex: 'opened_at',
+      key: 'opened_at',
+      render: (t) => t ? new Date(t + 'Z').toLocaleString('zh-CN', { hour12: false }) : '-'
+    },
+    {
+      title: '点击时间',
+      dataIndex: 'clicked_at',
+      key: 'clicked_at',
+      render: (t) => t ? new Date(t + 'Z').toLocaleString('zh-CN', { hour12: false }) : '-'
+    },
+    { title: '错误信息', dataIndex: 'error_message', key: 'error', ellipsis: true }
+  ];
 
-            {/* Details Table */}
-            <Card title="详细数据" extra={
-                <div style={{display: 'flex', gap: 10}}>
-                    <Button icon={<DownloadOutlined />} onClick={handleExport}>导出 CSV</Button>
-                    <Input.Search placeholder="搜索联系人" onSearch={handleSearch} style={{ width: 200 }} />
-                </div>
-            }>
-                <Tabs 
-                    activeKey={detailFilter} 
-                    onChange={setDetailFilter}
-                    items={[
-                        { key: 'all', label: '全部' },
-                        { key: 'sent', label: '已发送' },
-                        { key: 'opened', label: '已打开' },
-                        { key: 'clicked', label: '已点击' },
-                        { key: 'failed', label: '发送失败' },
-                    ]}
-                />
-                <Table 
-                    columns={columns} 
-                    dataSource={details.items} 
-                    rowKey="id" 
-                    loading={loading}
-                    pagination={{
-                        current: details.page,
-                        pageSize: details.size,
-                        total: details.total,
-                        onChange: (p, s) => loadDetails(p, s, searchText, detailFilter)
-                    }}
-                />
-            </Card>
+  if (!stats) return <div style={{ padding: 50, textAlign: 'center' }}><SyncOutlined spin /> 加载数据中...</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+      <Row gutter={16}>
+        <Col span={4}>
+          <Card>
+            <Statistic title="收件人数" value={stats.total_recipients} prefix={<UserOutlined />} />
+          </Card>
+        </Col>
+        <Col span={5}>
+          <Card>
+            <Statistic title="发送封数" value={stats.sent_count} prefix={<RocketOutlined />} suffix={<span style={{ fontSize: 12, color: '#999' }}>送达率 {stats.delivery_rate}%</span>} />
+          </Card>
+        </Col>
+        <Col span={5}>
+          <Card>
+            <Statistic title="送达封数" value={stats.delivered_count} prefix={<CheckCircleOutlined style={{ color: 'green' }} />} />
+          </Card>
+        </Col>
+        <Col span={5}>
+          <Card>
+            <Statistic title="打开封数" value={stats.opened_count} prefix={<EyeOutlined style={{ color: 'orange' }} />} suffix={<span style={{ fontSize: 12, color: '#999' }}>打开率 {stats.open_rate}%</span>} />
+          </Card>
+        </Col>
+        <Col span={5}>
+          <Card>
+            <Statistic title="点击人数" value={stats.clicked_count} prefix={<PieChartOutlined style={{ color: 'purple' }} />} suffix={<span style={{ fontSize: 12, color: '#999' }}>点击率 {stats.click_rate}%</span>} />
+          </Card>
+        </Col>
+      </Row>
+
+      <Card title="发信任务概览（点击行查看该任务详情）" extra={
+        <Space>
+          <Button
+            onClick={() => handleCampaignSelect(undefined)}
+            type={!selectedCampaignId ? 'primary' : 'default'}
+          >
+            全部任务
+          </Button>
+          <Select
+            style={{ width: 260 }}
+            allowClear
+            placeholder="按任务筛选"
+            value={selectedCampaignId}
+            onChange={handleCampaignSelect}
+            options={campaignSummaries.map((campaign) => ({
+              label: `${campaign.name} (#${campaign.id})`,
+              value: campaign.id,
+            }))}
+          />
+        </Space>
+      }>
+        <Table
+          size="small"
+          rowKey="id"
+          dataSource={campaignSummaries}
+          columns={campaignColumns}
+          pagination={{ pageSize: 6 }}
+          onRow={(record) => ({
+            onClick: () => handleCampaignSelect(record.id),
+          })}
+        />
+      </Card>
+
+      <Card title="任务效果 - 最近营销邮件表现" extra={
+        <Radio.Group value={chartRange} onChange={(e) => setChartRange(e.target.value)}>
+          <Radio.Button value={1}>24小时</Radio.Button>
+          <Radio.Button value={7}>7天</Radio.Button>
+          <Radio.Button value={30}>30天</Radio.Button>
+        </Radio.Group>
+      }>
+        <div style={{ height: 300 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData}>
+              <CartesianGrid strokeDasharray="3 3" />
+              <XAxis dataKey="time" />
+              <YAxis />
+              <ChartTooltip />
+              <Legend />
+              <Line type="monotone" dataKey="opened" name="打开人数" stroke="#1890ff" activeDot={{ r: 8 }} />
+              <Line type="monotone" dataKey="clicked" name="点击人数" stroke="#722ed1" />
+            </LineChart>
+          </ResponsiveContainer>
         </div>
-    );
+      </Card>
+
+      <Card title="详细数据" extra={
+        <Space wrap>
+          <DatePicker.RangePicker
+            value={timeRange}
+            onChange={(value) => setTimeRange(value || null)}
+            allowClear
+          />
+          <Select
+            style={{ width: 150 }}
+            value={exportScope}
+            onChange={setExportScope}
+            options={[
+              { label: '导出全部', value: 'all' },
+              { label: '仅当前页', value: 'page' },
+            ]}
+          />
+          <Button icon={<DownloadOutlined />} onClick={handleExport}>导出 CSV</Button>
+          <Input.Search placeholder="搜索联系人/任务" onSearch={handleSearch} style={{ width: 240 }} />
+        </Space>
+      }>
+        <Tabs
+          activeKey={detailFilter}
+          onChange={setDetailFilter}
+          items={[
+            { key: 'all', label: '全部' },
+            { key: 'sent', label: '已发送' },
+            { key: 'opened', label: '已打开' },
+            { key: 'clicked', label: '已点击' },
+            { key: 'failed', label: '发送失败' },
+          ]}
+        />
+        <Table
+          columns={detailColumns}
+          dataSource={details.items}
+          rowKey="id"
+          loading={loading}
+          pagination={{
+            current: details.page,
+            pageSize: details.size,
+            total: details.total,
+            onChange: (p, s) => loadDetails(p, s, searchText, detailFilter, selectedCampaignId, timeRange)
+          }}
+        />
+      </Card>
+    </div>
+  );
 };
 
 // --- Components ---
@@ -441,7 +559,7 @@ const Contacts = () => {
     name: 'file',
     customRequest: async (options) => {
       try {
-        const listName = options.file.name.split('.')[0];
+        const listName = options.file.name;
         await contactApi.upload(options.file, listName);
         message.success('上传成功');
         refresh();
@@ -476,7 +594,7 @@ const Contacts = () => {
     <Card title="联系人列表管理" extra={<Upload {...uploadProps} showUploadList={false}><Button icon={<UploadOutlined />}>上传 CSV 文件</Button></Upload>}>
       <Table dataSource={lists} columns={columns} rowKey="id" />
       <div style={{marginTop: 10, color: '#666'}}>
-        * CSV 文件必须包含 <b>EmailAddr</b> 列（收件人邮箱），可选包含 <b>UserName</b>, <b>Birthday</b> 等变量列。<br/>
+        * CSV 文件必须包含 <b>EmailAddr</b> 列（收件人邮箱），可选包含 <b>FirstName</b>/<b>MiddleName</b>/<b>LastName</b>、<b>UserName</b>、<b>Birthday</b> 等变量列。<br/>
         * 系统会自动过滤重复和无效的邮件地址，请在上传前删除文件底部的说明文字。
       </div>
     </Card>
@@ -546,6 +664,20 @@ const Templates = () => {
       setEditingId(null);
       form.resetFields();
   };
+
+  const handleDeleteTemplate = async (record) => {
+      try {
+          await api.delete(`/templates/${record.id}`);
+          message.success('模板已删除');
+          if (editingId === record.id) {
+              setEditingId(null);
+              form.resetFields();
+          }
+          refresh();
+      } catch (e) {
+          message.error('删除失败: ' + (e.response?.data?.detail || e.message));
+      }
+  };
   
   const handleSync = async () => {
     if (filterProvider === 'local') {
@@ -592,9 +724,20 @@ const Templates = () => {
     { title: '发送人名称', dataIndex: 'from_alias', key: 'alias' },
     { title: '邮件标题', dataIndex: 'subject', key: 'subject' },
     { title: '操作', key: 'action', render: (_, record) => (
-        record.provider === 'local'
-          ? <Button icon={<EditOutlined />} size="small" onClick={() => handleEdit(record)}>编辑</Button>
-          : <span style={{ color: '#999' }}>云模板请在云端修改后同步</span>
+        <Space>
+          {record.provider === 'local' ? (
+            <Button icon={<EditOutlined />} size="small" onClick={() => handleEdit(record)}>编辑</Button>
+          ) : (
+            <Tag color="default">云模板</Tag>
+          )}
+          <Popconfirm
+            title="确定删除该模板？"
+            description={record.provider !== 'local' ? '删除后可通过“同步云端模板”重新拉取。' : undefined}
+            onConfirm={() => handleDeleteTemplate(record)}
+          >
+            <Button icon={<DeleteOutlined />} size="small" danger>删除</Button>
+          </Popconfirm>
+        </Space>
     )}
   ];
 
@@ -609,14 +752,14 @@ const Templates = () => {
     <div style={{ display: 'flex', gap: 20 }}>
       <Card title={editingId ? "编辑模板" : "新建模板"} style={{ flex: 1 }}>
         <Form form={form} layout="vertical" onFinish={onFinish}>
-          <Form.Item name="title" label="模板名称 (内部标识)" required><Input placeholder="例如：元旦促销模板" /></Form.Item>
-          <Form.Item name="from_alias" label="发送人名称" required tooltip="例如：阿里云通知。收件人看到的邮件来源名称"><Input placeholder="例如：市场部" /></Form.Item>
-          <Form.Item name="subject" label="邮件标题" required tooltip="使用 {Name} 代表收件人姓名，或 CSV 中的其他列名如 {Birthday}"><Input placeholder="例如：你好 {Name}，这是给你的专属优惠" /></Form.Item>
+          <Form.Item name="title" label="模板名称 (内部标识)" rules={[{ required: true, message: '请输入模板名称' }]}><Input placeholder="例如：元旦促销模板" /></Form.Item>
+          <Form.Item name="from_alias" label="发送人名称" rules={[{ required: true, message: '请输入发送人名称' }]} tooltip="例如：阿里云通知。收件人看到的邮件来源名称"><Input placeholder="例如：市场部" /></Form.Item>
+          <Form.Item name="subject" label="邮件标题" rules={[{ required: true, message: '请输入邮件标题' }]} tooltip="使用 {Name} 代表收件人姓名，或 CSV 中的其他列名如 {Birthday}"><Input placeholder="例如：你好 {Name}，这是给你的专属优惠" /></Form.Item>
           <Form.Item label="邮件正文 (支持 HTML)" required tooltip="使用 {Name} 代表收件人姓名">
             <Tabs defaultActiveKey="1" items={[
                 {
                     key: '1', label: '编辑代码', children: (
-                        <Form.Item name="body" noStyle>
+                        <Form.Item name="body" noStyle rules={[{ required: true, message: '请输入邮件正文' }]}>
                             <TextArea rows={15} placeholder="<html><body><h1>你好 {Name}!</h1></body></html>" style={{fontFamily: 'monospace'}} />
                         </Form.Item>
                     )
@@ -628,7 +771,7 @@ const Templates = () => {
                                 const html = getFieldValue('body') || '';
                                 return (
                                     <div style={{border: '1px solid #d9d9d9', borderRadius: 6, padding: 10, minHeight: 330, background: '#fff'}}>
-                                        <div dangerouslySetInnerHTML={{__html: html}} />
+                                        <div dangerouslySetInnerHTML={{__html: DOMPurify.sanitize(html)}} />
                                     </div>
                                 );
                             }}
@@ -677,16 +820,16 @@ const Templates = () => {
 
       <Modal title="按 ID 导入模板" open={isImportModalOpen} onOk={handleImport} onCancel={() => setIsImportModalOpen(false)}>
           <Form form={importForm} layout="vertical">
-              <Form.Item name="provider" label="服务商" initialValue="aliyun" required>
+              <Form.Item name="provider" label="服务商" initialValue="aliyun" rules={[{ required: true, message: '请选择服务商' }]}>
                   <Select>
                       <Select.Option value="aliyun">阿里云 (DirectMail)</Select.Option>
                       <Select.Option value="tencent">腾讯云 (SES)</Select.Option>
                   </Select>
               </Form.Item>
-              <Form.Item name="account_id" label="云账号" required>
+              <Form.Item name="account_id" label="云账号" rules={[{ required: true, message: '请选择云账号' }]}>
                   <Select options={importAccountOptions} placeholder="请选择账号" />
               </Form.Item>
-              <Form.Item name="template_id" label="模板 ID" required tooltip="请在腾讯云/阿里云控制台查找模板 ID (数字)">
+              <Form.Item name="template_id" label="模板 ID" rules={[{ required: true, message: '请输入模板 ID' }]} tooltip="请在腾讯云/阿里云控制台查找模板 ID (数字)">
                   <Input placeholder="例如：12345" />
               </Form.Item>
           </Form>
@@ -708,12 +851,20 @@ const Campaigns = () => {
   const selectedProvider = Form.useWatch('provider', form);
   const selectedAccountId = Form.useWatch('account_id', form);
 
-  const refresh = () => {
+  const refreshCampaigns = () => {
     api.get('/campaigns').then(res => setCampaigns(res.data));
+  };
+
+  const refreshMetadata = () => {
     api.get('/contacts').then(res => setLists(res.data));
     api.get('/templates').then(res => setTemplates(res.data));
     accountApi.getAll().then(res => setAccounts((res.data || []).filter(a => a.enabled)));
     settingsApi.getReplyTos().then(res => setSavedReplyTos(res.data || []));
+  };
+
+  const refresh = () => {
+    refreshCampaigns();
+    refreshMetadata();
   };
   
   useEffect(() => {
@@ -731,8 +882,8 @@ const Campaigns = () => {
       }
     }
     
-    refresh(); 
-    const interval = setInterval(refresh, 3000);
+    refresh();
+    const interval = setInterval(refreshCampaigns, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -753,7 +904,7 @@ const Campaigns = () => {
           reply_address: s.reply_address,
           account_id: s.account_id,
       })));
-    }).catch(e => message.error('加载发信地址失败'));
+    }).catch(_e => message.error('加载发信地址失败'));
   };
 
   useEffect(() => {
@@ -768,9 +919,7 @@ const Campaigns = () => {
   const handleAccountChange = (value) => {
       // 阿里云自动填充回信地址
       if (selectedProvider === 'aliyun') {
-          // value 可能是数组 (mode="tags")
-          const email = Array.isArray(value) ? value[0] : value;
-          const sender = senders.find(s => s.value === email);
+          const sender = senders.find(s => s.value === value);
           if (sender && sender.reply_address) {
               form.setFieldsValue({ reply_to_address: sender.reply_address });
               message.info(`已自动加载阿里云回信地址: ${sender.reply_address}`);
@@ -810,14 +959,9 @@ const Campaigns = () => {
   };
 
   const onFinish = (values) => {
-    let accName = values.account_name;
-    if (Array.isArray(accName)) {
-        accName = accName[0];
-    }
-
     const payload = {
       ...values,
-      account_name: accName,
+      account_name: values.account_name,
       account_id: values.account_id ? parseInt(values.account_id, 10) : null,
       batch_size: parseInt(values.batch_size, 10),
       interval_minutes: parseInt(values.interval_minutes, 10),
@@ -880,10 +1024,10 @@ const Campaigns = () => {
         <Form form={form} layout="vertical" onFinish={onFinish} onValuesChange={handleValuesChange}>
           <Row gutter={16}>
             <Col span={8}>
-              <Form.Item name="name" label="任务名称" required><Input placeholder="例如：元旦促销第一波" /></Form.Item>
+              <Form.Item name="name" label="任务名称" rules={[{ required: true, message: '请输入任务名称' }]}><Input placeholder="例如：元旦促销第一波" /></Form.Item>
             </Col>
             <Col span={8}>
-              <Form.Item name="provider" label="服务商" initialValue="aliyun" required>
+              <Form.Item name="provider" label="服务商" initialValue="aliyun" rules={[{ required: true, message: '请选择服务商' }]}>
                 <Select onChange={() => {
                   form.setFieldsValue({
                     account_id: null,
@@ -904,7 +1048,7 @@ const Campaigns = () => {
           
           <Row gutter={16}>
             <Col span={6}>
-              <Form.Item name="account_id" label="云账号" required>
+              <Form.Item name="account_id" label="云账号" rules={[{ required: true, message: '请选择云账号' }]}>
                 <Select
                   placeholder="请选择账号"
                   options={accountOptions}
@@ -913,7 +1057,7 @@ const Campaigns = () => {
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="template_id" label="选择模板" required>
+              <Form.Item name="template_id" label="选择模板" rules={[{ required: true, message: '请选择模板' }]}>
                 <Select
                   placeholder="请选择"
                   options={filteredTemplates.map(t => ({ label: `${t.title}${t.account_name ? ` [${t.account_name}]` : ''}`, value: t.id }))}
@@ -921,14 +1065,12 @@ const Campaigns = () => {
               </Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="list_id" label="选择联系人列表" required><Select placeholder="请选择" options={lists.map(l => ({label: l.name, value: l.id}))} /></Form.Item>
+              <Form.Item name="list_id" label="选择联系人列表" rules={[{ required: true, message: '请选择联系人列表' }]}><Select placeholder="请选择" options={lists.map(l => ({label: l.name, value: l.id}))} /></Form.Item>
             </Col>
             <Col span={6}>
-              <Form.Item name="account_name" label="发信地址" required>
+              <Form.Item name="account_name" label="发信地址" rules={[{ required: true, message: '请选择发信地址' }]}>
                 <Select 
                   placeholder={selectedProvider === 'tencent' ? "请选择腾讯云域名" : "请选择阿里云发信地址"}
-                  mode="tags" 
-                  maxCount={1}
                   onOpenChange={(open) => open && loadSenders(selectedAccountId)}
                   onChange={handleAccountChange}
                   options={filteredSenders}
@@ -966,10 +1108,14 @@ const Campaigns = () => {
                </Form.Item>
             </Col>
             <Col span={5}>
-              <Form.Item name="batch_size" label="单次发送数量" initialValue={2000}><Input type="number" /></Form.Item>
+              <Form.Item name="batch_size" label="单次发送数量" initialValue={2000} rules={[{ required: true, message: '请输入单次发送数量' }]}>
+                <InputNumber min={1} max={100000} style={{ width: '100%' }} />
+              </Form.Item>
             </Col>
             <Col span={5}>
-              <Form.Item name="interval_minutes" label="发送间隔(分钟)" initialValue={15}><Input type="number" /></Form.Item>
+              <Form.Item name="interval_minutes" label="发送间隔(分钟)" initialValue={15} rules={[{ required: true, message: '请输入发送间隔' }]}>
+                <InputNumber min={0} max={1440} style={{ width: '100%' }} />
+              </Form.Item>
             </Col>
             <Col span={6}>
               <Form.Item name="scheduled_start_time" label="计划开始时间"><DatePicker showTime placeholder="立即开始" style={{width: '100%'}} /></Form.Item>
@@ -1006,9 +1152,102 @@ const Campaigns = () => {
 const App = () => {
   const navigate = useNavigate();
   const location = useLocation();
+  const [authStatus, setAuthStatus] = useState({
+    loading: true,
+    authenticated: false,
+    bootstrap_required: false,
+  });
+  const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [authForm] = Form.useForm();
   const {
     token: { colorBgContainer },
   } = theme.useToken();
+
+  const refreshAuthStatus = () => {
+    authApi.status()
+      .then((res) => {
+        setAuthStatus({
+          loading: false,
+          authenticated: !!res.data?.authenticated,
+          bootstrap_required: !!res.data?.bootstrap_required,
+        });
+      })
+      .catch(() => {
+        setAuthStatus({
+          loading: false,
+          authenticated: false,
+          bootstrap_required: true,
+        });
+      });
+  };
+
+  useEffect(() => {
+    refreshAuthStatus();
+  }, []);
+
+  const handleAuthSubmit = async () => {
+    try {
+      const values = await authForm.validateFields();
+      setAuthSubmitting(true);
+      if (authStatus.bootstrap_required) {
+        await authApi.bootstrap(values.password);
+        message.success('管理员密码设置成功');
+      } else {
+        await authApi.login(values.password);
+        message.success('登录成功');
+      }
+      authForm.resetFields();
+      refreshAuthStatus();
+    } catch (e) {
+      if (e?.errorFields) return;
+      message.error(e.response?.data?.detail || '认证失败');
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      await authApi.logout();
+    } finally {
+      refreshAuthStatus();
+    }
+  };
+
+  if (authStatus.loading) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        <Spin size="large" />
+      </div>
+    );
+  }
+
+  if (!authStatus.authenticated) {
+    return (
+      <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f5f5f5', padding: 16 }}>
+        <Card
+          title={authStatus.bootstrap_required ? '首次初始化管理员密码' : '管理员登录'}
+          style={{ width: 420, maxWidth: '100%' }}
+        >
+          <Form form={authForm} layout="vertical" onFinish={handleAuthSubmit}>
+            <Form.Item
+              name="password"
+              label="密码"
+              rules={[
+                { required: true, message: '请输入密码' },
+                { min: 8, message: '密码至少 8 位' },
+              ]}
+            >
+              <Input.Password placeholder="请输入管理员密码" />
+            </Form.Item>
+            <Button type="primary" htmlType="submit" loading={authSubmitting} block>
+              {authStatus.bootstrap_required ? '初始化并进入系统' : '登录'}
+            </Button>
+          </Form>
+        </Card>
+      </div>
+    );
+  }
 
   const menuItems = [
     { key: '/', icon: <PieChartOutlined />, label: '数据看板' }, // Changed to Dashboard
@@ -1025,7 +1264,9 @@ const App = () => {
         <Menu theme="dark" selectedKeys={[location.pathname]} mode="inline" onClick={(e) => navigate(e.key)} items={menuItems} />
       </Sider>
       <Layout>
-        <Header style={{ padding: 0, background: colorBgContainer }} />
+        <Header style={{ padding: '0 16px', background: colorBgContainer, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
+          <Button onClick={handleLogout}>退出登录</Button>
+        </Header>
         <Content style={{ margin: '16px' }}>
           <Routes>
             <Route path="/" element={<Dashboard />} /> {/* New Home */}
