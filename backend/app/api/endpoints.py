@@ -23,7 +23,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from ..core.database import get_db
-from ..core.scheduler import scheduler, send_campaign_batch
+from ..core.scheduler import SUCCESS_STATUSES, scheduler, send_campaign_batch
 from ..core.security import (
     ADMIN_SESSION_COOKIE,
     build_admin_session_token,
@@ -1077,6 +1077,29 @@ def start_campaign(id: int, db: Session = Depends(get_db)):
         db.commit()
         return {"status": "scheduled", "start_time": campaign.scheduled_start_time}
 
+    # Re-queue unfinished recipients so a restarted campaign can continue.
+    requeued_recipients = (
+        db.query(models.CampaignRecipient)
+        .filter(
+            models.CampaignRecipient.campaign_id == id,
+            models.CampaignRecipient.status.in_(("failed", "sending")),
+        )
+        .update(
+            {
+                models.CampaignRecipient.status: "pending",
+                models.CampaignRecipient.error_message: None,
+            },
+            synchronize_session=False,
+        )
+    )
+    campaign.sent_count = (
+        db.query(models.CampaignRecipient)
+        .filter(
+            models.CampaignRecipient.campaign_id == id,
+            models.CampaignRecipient.status.in_(SUCCESS_STATUSES),
+        )
+        .count()
+    )
     campaign.status = "sending"
     db.commit()
     try:
@@ -1092,7 +1115,7 @@ def start_campaign(id: int, db: Session = Depends(get_db)):
         db.commit()
         logger.exception("Trigger campaign failed id=%s", id)
         raise HTTPException(status_code=500, detail=f"Failed to start campaign: {e}")
-    return {"status": "started"}
+    return {"status": "started", "requeued_recipients": requeued_recipients}
 
 
 @router.post("/campaigns/{id}/stop")

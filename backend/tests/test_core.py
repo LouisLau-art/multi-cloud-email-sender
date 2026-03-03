@@ -4,6 +4,7 @@ from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.core.database import get_db
 import app.core.scheduler as scheduler_module
+import app.api.endpoints as endpoints_module
 # Import Base directly from models to guarantee it has the tables registered
 from app.models.models import Base 
 import app.models.models as models_module 
@@ -329,6 +330,218 @@ def test_csv_parsing_tab_delimiter():
     # 验证变量是否解析正确 (这需要查库，或者信任 process_csv 的逻辑)
     # 我们可以通过发信日志侧面验证，但单元测试里很难 hook 日志。
     # 这里只要 200 OK 且 count=1，说明解析器至少没崩，且识别出了 EmailAddr。
+
+
+def test_start_campaign_requeues_unfinished_recipients(monkeypatch):
+    def _noop_add_job(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(endpoints_module.scheduler, "add_job", _noop_add_job)
+
+    db = TestingSessionLocal()
+    try:
+        campaign = models_module.Campaign(
+            name="retry-campaign",
+            provider="aliyun",
+            template_id=1,
+            list_id=1,
+            account_name="sender@test.com",
+            status="completed",
+            total_recipients=5,
+            sent_count=5,
+            batch_size=2000,
+            interval_minutes=15,
+        )
+        db.add(campaign)
+        db.flush()
+
+        db.add_all(
+            [
+                models_module.CampaignRecipient(
+                    campaign_id=campaign.id,
+                    email="sent@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="sent",
+                ),
+                models_module.CampaignRecipient(
+                    campaign_id=campaign.id,
+                    email="opened@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="opened",
+                ),
+                models_module.CampaignRecipient(
+                    campaign_id=campaign.id,
+                    email="failed1@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="failed",
+                    error_message="provider error",
+                ),
+                models_module.CampaignRecipient(
+                    campaign_id=campaign.id,
+                    email="failed2@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="failed",
+                    error_message="network error",
+                ),
+                models_module.CampaignRecipient(
+                    campaign_id=campaign.id,
+                    email="sending@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="sending",
+                ),
+            ]
+        )
+        db.commit()
+        campaign_id = campaign.id
+    finally:
+        db.close()
+
+    response = client.post(f"/api/campaigns/{campaign_id}/start")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "started"
+    assert payload["requeued_recipients"] == 3
+
+    db = TestingSessionLocal()
+    try:
+        campaign = (
+            db.query(models_module.Campaign)
+            .filter(models_module.Campaign.id == campaign_id)
+            .first()
+        )
+        assert campaign.status == "sending"
+        assert campaign.sent_count == 2
+
+        recipients = (
+            db.query(models_module.CampaignRecipient)
+            .filter(models_module.CampaignRecipient.campaign_id == campaign_id)
+            .all()
+        )
+        statuses = [r.status for r in recipients]
+        assert statuses.count("pending") == 3
+        assert statuses.count("sent") == 1
+        assert statuses.count("opened") == 1
+    finally:
+        db.close()
+
+
+def test_recover_interrupted_campaigns_normalizes_partial_completed(monkeypatch):
+    monkeypatch.setattr(scheduler_module, "get_db_session", TestingSessionLocal)
+
+    db = TestingSessionLocal()
+    try:
+        partial_campaign = models_module.Campaign(
+            name="partial-completed",
+            provider="aliyun",
+            template_id=1,
+            list_id=1,
+            account_name="sender@test.com",
+            status="completed",
+            total_recipients=4,
+            sent_count=4,
+            batch_size=2000,
+            interval_minutes=15,
+        )
+        db.add(partial_campaign)
+        db.flush()
+
+        db.add_all(
+            [
+                models_module.CampaignRecipient(
+                    campaign_id=partial_campaign.id,
+                    email="p1@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="sent",
+                ),
+                models_module.CampaignRecipient(
+                    campaign_id=partial_campaign.id,
+                    email="p2@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="sent",
+                ),
+                models_module.CampaignRecipient(
+                    campaign_id=partial_campaign.id,
+                    email="p3@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="failed",
+                ),
+                models_module.CampaignRecipient(
+                    campaign_id=partial_campaign.id,
+                    email="p4@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="failed",
+                ),
+            ]
+        )
+
+        running_campaign = models_module.Campaign(
+            name="running-campaign",
+            provider="aliyun",
+            template_id=1,
+            list_id=1,
+            account_name="sender@test.com",
+            status="sending",
+            total_recipients=2,
+            sent_count=1,
+            batch_size=2000,
+            interval_minutes=15,
+        )
+        db.add(running_campaign)
+        db.flush()
+
+        db.add_all(
+            [
+                models_module.CampaignRecipient(
+                    campaign_id=running_campaign.id,
+                    email="r1@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="sending",
+                ),
+                models_module.CampaignRecipient(
+                    campaign_id=running_campaign.id,
+                    email="r2@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="sent",
+                ),
+            ]
+        )
+
+        db.commit()
+        partial_campaign_id = partial_campaign.id
+        running_campaign_id = running_campaign.id
+    finally:
+        db.close()
+
+    scheduler_module.recover_interrupted_campaigns()
+
+    db = TestingSessionLocal()
+    try:
+        partial_campaign = (
+            db.query(models_module.Campaign)
+            .filter(models_module.Campaign.id == partial_campaign_id)
+            .first()
+        )
+        assert partial_campaign.status == "paused"
+        assert partial_campaign.sent_count == 2
+
+        running_campaign = (
+            db.query(models_module.Campaign)
+            .filter(models_module.Campaign.id == running_campaign_id)
+            .first()
+        )
+        assert running_campaign.status == "sending"
+
+        running_recipients = (
+            db.query(models_module.CampaignRecipient)
+            .filter(models_module.CampaignRecipient.campaign_id == running_campaign_id)
+            .all()
+        )
+        running_statuses = [r.status for r in running_recipients]
+        assert running_statuses.count("pending") == 1
+        assert running_statuses.count("sent") == 1
+    finally:
+        db.close()
+
 
 def test_scheduled_campaign():
     """测试计划任务逻辑"""

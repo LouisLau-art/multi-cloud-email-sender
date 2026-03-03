@@ -309,6 +309,35 @@ def _campaign_sent_count(db: Session, campaign_id: int) -> int:
     )
 
 
+def _finalize_campaign_status(db: Session, campaign):
+    campaign.sent_count = _campaign_sent_count(db, campaign.id)
+    pending_left = (
+        db.query(models.CampaignRecipient)
+        .filter(
+            models.CampaignRecipient.campaign_id == campaign.id,
+            models.CampaignRecipient.status.in_(("pending", "sending")),
+        )
+        .count()
+    )
+    if pending_left > 0:
+        return
+
+    failed_left = (
+        db.query(models.CampaignRecipient)
+        .filter(
+            models.CampaignRecipient.campaign_id == campaign.id,
+            models.CampaignRecipient.status == "failed",
+        )
+        .count()
+    )
+    total_recipients = campaign.total_recipients or 0
+    if failed_left > 0 and campaign.sent_count < total_recipients:
+        # Keep campaign resumable for retrying unsent recipients.
+        campaign.status = "paused"
+    else:
+        campaign.status = "completed"
+
+
 def _campaign_lock(campaign_id: int) -> Lock:
     with _campaign_job_locks_guard:
         if campaign_id not in _campaign_job_locks:
@@ -430,8 +459,7 @@ def _process_campaign_batch(campaign_id: int):
         )
 
         if not recipients:
-            campaign.sent_count = _campaign_sent_count(db, campaign.id)
-            campaign.status = "completed"
+            _finalize_campaign_status(db, campaign)
             db.commit()
             return
 
@@ -600,17 +628,8 @@ def _process_campaign_batch(campaign_id: int):
                 db.commit()
                 batch_failed += 1
 
-        campaign.sent_count = _campaign_sent_count(db, campaign.id)
-        pending_left = (
-            db.query(models.CampaignRecipient)
-            .filter(
-                models.CampaignRecipient.campaign_id == campaign.id,
-                models.CampaignRecipient.status.in_(("pending", "sending")),
-            )
-            .count()
-        )
-        if pending_left == 0 and campaign.status == "sending":
-            campaign.status = "completed"
+        if campaign.status == "sending":
+            _finalize_campaign_status(db, campaign)
 
         batch_status = "sent"
         batch_error = None
@@ -890,13 +909,12 @@ def recover_interrupted_campaigns():
             )
             .filter(
                 models.CampaignRecipient.status == "sending",
-                models.Campaign.status.in_(("sending", "pending", "scheduled", "paused")),
+                models.Campaign.status.in_(
+                    ("sending", "pending", "scheduled", "paused", "completed")
+                ),
             )
             .all()
         )
-        if not stuck_recipients:
-            return
-
         affected_campaign_ids = set()
         for recipient in stuck_recipients:
             recipient.status = "pending"
@@ -913,14 +931,48 @@ def recover_interrupted_campaigns():
             if campaign:
                 campaign.sent_count = _campaign_sent_count(db, campaign_id)
                 if campaign.status == "completed":
-                    campaign.status = "sending"
+                    # A completed campaign with recoverable recipients is inconsistent.
+                    campaign.status = "paused"
+
+        normalized_completed = 0
+        completed_campaigns = (
+            db.query(models.Campaign)
+            .filter(models.Campaign.status == "completed")
+            .all()
+        )
+        for campaign in completed_campaigns:
+            campaign.sent_count = _campaign_sent_count(db, campaign.id)
+            pending_or_sending = (
+                db.query(models.CampaignRecipient)
+                .filter(
+                    models.CampaignRecipient.campaign_id == campaign.id,
+                    models.CampaignRecipient.status.in_(("pending", "sending")),
+                )
+                .count()
+            )
+            failed_count = (
+                db.query(models.CampaignRecipient)
+                .filter(
+                    models.CampaignRecipient.campaign_id == campaign.id,
+                    models.CampaignRecipient.status == "failed",
+                )
+                .count()
+            )
+            total_recipients = campaign.total_recipients or 0
+            if pending_or_sending > 0 or (
+                failed_count > 0 and campaign.sent_count < total_recipients
+            ):
+                campaign.status = "paused"
+                normalized_completed += 1
 
         db.commit()
-        logger.warning(
-            "Recovered %s recipients from 'sending' to 'pending' across %s campaigns after restart.",
-            len(stuck_recipients),
-            len(affected_campaign_ids),
-        )
+        if stuck_recipients or normalized_completed:
+            logger.warning(
+                "Recovered %s recipients from 'sending' to 'pending' across %s campaigns; normalized %s stale completed campaigns.",
+                len(stuck_recipients),
+                len(affected_campaign_ids),
+                normalized_completed,
+            )
     except Exception:
         db.rollback()
         logger.exception("Failed to recover interrupted campaigns.")
