@@ -116,8 +116,19 @@ if errorlevel 1 (
     )
 )
 
+set "NEED_FRONTEND_INSTALL=0"
 if not exist "%ROOT_DIR%\frontend\node_modules" (
-    echo [Setup] Installing frontend dependencies...
+    set "NEED_FRONTEND_INSTALL=1"
+) else (
+    pushd "%ROOT_DIR%\frontend"
+    call npm ls --depth=0 >nul 2>&1
+    if errorlevel 1 set "NEED_FRONTEND_INSTALL=1"
+    if not exist "node_modules\dompurify\package.json" set "NEED_FRONTEND_INSTALL=1"
+    popd
+)
+
+if "%NEED_FRONTEND_INSTALL%"=="1" (
+    echo [Setup] Installing/repairing frontend dependencies...
     pushd "%ROOT_DIR%\frontend"
     call npm install
     popd
