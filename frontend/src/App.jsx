@@ -1156,6 +1156,7 @@ const App = () => {
     loading: true,
     authenticated: false,
     bootstrap_required: false,
+    auth_enabled: true,
   });
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const [authForm] = Form.useForm();
@@ -1170,6 +1171,7 @@ const App = () => {
           loading: false,
           authenticated: !!res.data?.authenticated,
           bootstrap_required: !!res.data?.bootstrap_required,
+          auth_enabled: res.data?.auth_enabled !== false,
         });
       })
       .catch(() => {
@@ -1265,7 +1267,7 @@ const App = () => {
       </Sider>
       <Layout>
         <Header style={{ padding: '0 16px', background: colorBgContainer, display: 'flex', justifyContent: 'flex-end', alignItems: 'center' }}>
-          <Button onClick={handleLogout}>退出登录</Button>
+          {authStatus.auth_enabled ? <Button onClick={handleLogout}>退出登录</Button> : null}
         </Header>
         <Content style={{ margin: '16px' }}>
           <Routes>

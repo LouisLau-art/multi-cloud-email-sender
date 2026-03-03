@@ -1,6 +1,7 @@
 import base64
 import json
 import logging
+import os
 from datetime import datetime
 from types import SimpleNamespace
 from typing import Optional
@@ -37,6 +38,12 @@ from ..services.aliyun_service import AliyunService
 from ..services.campaign_service import CampaignService, ContactService
 
 logger = logging.getLogger(__name__)
+AUTH_ENABLED = os.getenv("ENABLE_ADMIN_AUTH", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 public_router = APIRouter()
 
@@ -175,6 +182,8 @@ def require_admin_session(
     db: Session = Depends(get_db),
     session_token: Optional[str] = Cookie(default=None, alias=ADMIN_SESSION_COOKIE),
 ):
+    if not AUTH_ENABLED:
+        return True
     setting = db.query(models.Setting).first()
     if not _is_bootstrapped(setting):
         raise HTTPException(status_code=401, detail="Admin password not initialized")
@@ -196,6 +205,13 @@ def auth_status(
     db: Session = Depends(get_db),
     session_token: Optional[str] = Cookie(default=None, alias=ADMIN_SESSION_COOKIE),
 ):
+    if not AUTH_ENABLED:
+        return {
+            "bootstrap_required": False,
+            "authenticated": True,
+            "auth_enabled": False,
+        }
+
     setting = db.query(models.Setting).first()
     bootstrap_required = not _is_bootstrapped(setting)
     authenticated = False
@@ -204,11 +220,15 @@ def auth_status(
     return {
         "bootstrap_required": bootstrap_required,
         "authenticated": authenticated,
+        "auth_enabled": True,
     }
 
 
 @public_router.post("/auth/bootstrap")
 def bootstrap_auth(payload: AuthPayload, request: Request, response: Response, db: Session = Depends(get_db)):
+    if not AUTH_ENABLED:
+        return {"status": "disabled", "auth_enabled": False}
+
     setting = _get_or_create_setting(db)
     if _is_bootstrapped(setting):
         raise HTTPException(status_code=409, detail="Already initialized")
@@ -227,6 +247,9 @@ def bootstrap_auth(payload: AuthPayload, request: Request, response: Response, d
 
 @public_router.post("/auth/login")
 def login_auth(payload: AuthPayload, request: Request, response: Response, db: Session = Depends(get_db)):
+    if not AUTH_ENABLED:
+        return {"status": "disabled", "auth_enabled": False}
+
     setting = db.query(models.Setting).first()
     if not _is_bootstrapped(setting):
         raise HTTPException(status_code=400, detail="Admin password not initialized")
@@ -243,6 +266,9 @@ def login_auth(payload: AuthPayload, request: Request, response: Response, db: S
 
 @public_router.post("/auth/logout")
 def logout_auth(response: Response):
+    if not AUTH_ENABLED:
+        return {"status": "disabled", "auth_enabled": False}
+
     response.delete_cookie(key=ADMIN_SESSION_COOKIE, path="/")
     return {"status": "ok"}
 

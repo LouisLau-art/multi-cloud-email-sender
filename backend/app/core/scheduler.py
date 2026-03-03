@@ -875,8 +875,62 @@ def pull_email_tracking_status():
         db.close()
 
 
+def recover_interrupted_campaigns():
+    """
+    Recover recipients left in `sending` due to process crash/kill.
+    They are re-queued to `pending` so campaigns can continue after restart.
+    """
+    db = get_db_session()
+    try:
+        stuck_recipients = (
+            db.query(models.CampaignRecipient)
+            .join(
+                models.Campaign,
+                models.Campaign.id == models.CampaignRecipient.campaign_id,
+            )
+            .filter(
+                models.CampaignRecipient.status == "sending",
+                models.Campaign.status.in_(("sending", "pending", "scheduled", "paused")),
+            )
+            .all()
+        )
+        if not stuck_recipients:
+            return
+
+        affected_campaign_ids = set()
+        for recipient in stuck_recipients:
+            recipient.status = "pending"
+            if not recipient.error_message:
+                recipient.error_message = "Recovered after process restart"
+            affected_campaign_ids.add(recipient.campaign_id)
+
+        for campaign_id in affected_campaign_ids:
+            campaign = (
+                db.query(models.Campaign)
+                .filter(models.Campaign.id == campaign_id)
+                .first()
+            )
+            if campaign:
+                campaign.sent_count = _campaign_sent_count(db, campaign_id)
+                if campaign.status == "completed":
+                    campaign.status = "sending"
+
+        db.commit()
+        logger.warning(
+            "Recovered %s recipients from 'sending' to 'pending' across %s campaigns after restart.",
+            len(stuck_recipients),
+            len(affected_campaign_ids),
+        )
+    except Exception:
+        db.rollback()
+        logger.exception("Failed to recover interrupted campaigns.")
+    finally:
+        db.close()
+
+
 def start_scheduler():
     if not scheduler.running:
+        recover_interrupted_campaigns()
         scheduler.add_job(
             send_campaign_batch,
             "interval",
