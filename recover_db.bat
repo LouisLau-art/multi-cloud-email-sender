@@ -11,6 +11,7 @@ if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
 set "BACKEND_DIR=%ROOT_DIR%\backend"
 set "DB_DIR=%BACKEND_DIR%"
 set "DB_NAME=email_app.db"
+set "SQLITE3_EXE="
 
 if not exist "%BACKEND_DIR%" (
     echo [ERROR] backend directory not found: "%BACKEND_DIR%"
@@ -47,14 +48,26 @@ if exist "%DB_DIR%\%DB_NAME%-wal" copy /Y "%DB_DIR%\%DB_NAME%-wal" "%RECOVERY_DI
 if exist "%DB_DIR%\%DB_NAME%-shm" copy /Y "%DB_DIR%\%DB_NAME%-shm" "%RECOVERY_DIR%\%DB_NAME%-shm.raw.%TS%.bak" >nul
 
 echo [STEP 2/6] Check sqlite3 availability...
-where sqlite3 >nul 2>&1
-if errorlevel 1 (
-    echo [ERROR] sqlite3.exe not found in PATH.
-    echo [HINT] Install SQLite CLI and rerun this script:
-    echo        winget install --id SQLite.SQLite -e
+if exist "%ROOT_DIR%\sqlite3.exe" (
+    set "SQLITE3_EXE=%ROOT_DIR%\sqlite3.exe"
+) else if exist "%BACKEND_DIR%\sqlite3.exe" (
+    set "SQLITE3_EXE=%BACKEND_DIR%\sqlite3.exe"
+) else (
+    for /f "usebackq delims=" %%I in (`where sqlite3 2^>nul`) do (
+        set "SQLITE3_EXE=%%I"
+        goto :sqlite_found
+    )
+)
+:sqlite_found
+if not defined SQLITE3_EXE (
+    echo [ERROR] sqlite3.exe not found.
+    echo [HINT] Put sqlite3.exe in project root:
+    echo        "%ROOT_DIR%\sqlite3.exe"
+    echo [HINT] Or install SQLite CLI and ensure sqlite3 is in PATH.
     pause
     exit /b 1
 )
+echo [INFO] Using sqlite3: "%SQLITE3_EXE%"
 
 echo [STEP 3/6] Select source file for recovery...
 set "SOURCE_FILE="
@@ -71,7 +84,7 @@ set "RECOVER_DB=%RECOVERY_DIR%\recovered_%TS%.db"
 
 echo [STEP 4/6] Run .recover...
 pushd "%DB_DIR%"
-sqlite3 "%SOURCE_FILE%" ".recover" > "%RECOVER_SQL%"
+"%SQLITE3_EXE%" "%SOURCE_FILE%" ".recover" > "%RECOVER_SQL%"
 if errorlevel 1 (
     popd
     echo [ERROR] sqlite3 .recover failed.
@@ -80,7 +93,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-sqlite3 "%RECOVER_DB%" < "%RECOVER_SQL%"
+"%SQLITE3_EXE%" "%RECOVER_DB%" < "%RECOVER_SQL%"
 if errorlevel 1 (
     popd
     echo [ERROR] Failed to rebuild recovered database from SQL dump.
@@ -89,7 +102,7 @@ if errorlevel 1 (
 )
 
 set "INTEGRITY_RESULT="
-for /f "usebackq delims=" %%I in (`sqlite3 "%RECOVER_DB%" "PRAGMA integrity_check;"`) do (
+for /f "usebackq delims=" %%I in (`"%SQLITE3_EXE%" "%RECOVER_DB%" "PRAGMA integrity_check;"`) do (
     set "INTEGRITY_RESULT=%%I"
 )
 echo [INFO] integrity_check: !INTEGRITY_RESULT!
