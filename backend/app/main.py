@@ -1,5 +1,6 @@
 import logging
 import os
+from datetime import datetime
 import sys
 
 import uvicorn
@@ -8,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from .api import endpoints, tracking, dashboard
-from .core.database import Base, engine
+from .core.database import Base, DB_PATH, engine
 from .core.db_migrations import run_startup_migrations
 from .core.scheduler import scheduler, start_scheduler
 
@@ -29,9 +30,51 @@ def _configure_stdout_encoding():
 
 _configure_stdout_encoding()
 
-# Ensure Database Tables Exist
-Base.metadata.create_all(bind=engine)
-run_startup_migrations(engine)
+def _is_sqlite_corruption_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "database disk image is malformed" in message
+        or "file is not a database" in message
+    )
+
+
+def _archive_corrupted_sqlite_files(db_path: str) -> list[str]:
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    archived_paths: list[str] = []
+    for suffix in ("", "-wal", "-shm"):
+        source_path = f"{db_path}{suffix}"
+        if not os.path.exists(source_path):
+            continue
+        target_path = f"{db_path}.{timestamp}.corrupt{suffix}"
+        os.replace(source_path, target_path)
+        archived_paths.append(target_path)
+    return archived_paths
+
+
+def _init_database_with_recovery() -> None:
+    try:
+        Base.metadata.create_all(bind=engine)
+        run_startup_migrations(engine)
+        return
+    except Exception as exc:
+        if not _is_sqlite_corruption_error(exc):
+            raise
+
+        logger.exception("Detected SQLite corruption at startup: %s", DB_PATH)
+        engine.dispose()
+        archived_paths = _archive_corrupted_sqlite_files(DB_PATH)
+        logger.error("Corrupted SQLite files archived to: %s", archived_paths)
+
+    # Retry once with a clean database file.
+    Base.metadata.create_all(bind=engine)
+    run_startup_migrations(engine)
+    logger.warning(
+        "Recreated a fresh SQLite database after corruption recovery. "
+        "Old data is kept in *.corrupt* backup files."
+    )
+
+
+_init_database_with_recovery()
 
 app = FastAPI(title="Email Marketing System")
 
