@@ -332,10 +332,16 @@ def _finalize_campaign_status(db: Session, campaign):
     )
     total_recipients = campaign.total_recipients or 0
     if failed_left > 0 and campaign.sent_count < total_recipients:
-        # Keep campaign resumable for retrying unsent recipients.
-        campaign.status = "paused"
-    else:
-        campaign.status = "completed"
+        logger.warning(
+            "Campaign %s finished with failures: sent=%s failed=%s total=%s",
+            campaign.id,
+            campaign.sent_count,
+            failed_left,
+            total_recipients,
+        )
+    # When there are no pending/sending recipients, the campaign has reached
+    # a terminal state and should not auto-pause.
+    campaign.status = "completed"
 
 
 def _campaign_lock(campaign_id: int) -> Lock:
@@ -950,18 +956,7 @@ def recover_interrupted_campaigns():
                 )
                 .count()
             )
-            failed_count = (
-                db.query(models.CampaignRecipient)
-                .filter(
-                    models.CampaignRecipient.campaign_id == campaign.id,
-                    models.CampaignRecipient.status == "failed",
-                )
-                .count()
-            )
-            total_recipients = campaign.total_recipients or 0
-            if pending_or_sending > 0 or (
-                failed_count > 0 and campaign.sent_count < total_recipients
-            ):
+            if pending_or_sending > 0:
                 campaign.status = "paused"
                 normalized_completed += 1
 

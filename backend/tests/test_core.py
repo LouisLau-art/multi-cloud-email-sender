@@ -521,7 +521,7 @@ def test_recover_interrupted_campaigns_normalizes_partial_completed(monkeypatch)
             .filter(models_module.Campaign.id == partial_campaign_id)
             .first()
         )
-        assert partial_campaign.status == "paused"
+        assert partial_campaign.status == "completed"
         assert partial_campaign.sent_count == 2
 
         running_campaign = (
@@ -539,6 +539,62 @@ def test_recover_interrupted_campaigns_normalizes_partial_completed(monkeypatch)
         running_statuses = [r.status for r in running_recipients]
         assert running_statuses.count("pending") == 1
         assert running_statuses.count("sent") == 1
+    finally:
+        db.close()
+
+
+def test_finalize_campaign_status_keeps_terminal_campaign_completed():
+    """
+    任务只剩失败收件人时，不应被自动改为 paused。
+    没有 pending/sending 就应保持 completed（终态）。
+    """
+    db = TestingSessionLocal()
+    try:
+        campaign = models_module.Campaign(
+            name="terminal-with-failures",
+            provider="aliyun",
+            template_id=1,
+            list_id=1,
+            account_name="sender@test.com",
+            status="sending",
+            total_recipients=3,
+            sent_count=0,
+            batch_size=2000,
+            interval_minutes=15,
+        )
+        db.add(campaign)
+        db.flush()
+
+        db.add_all(
+            [
+                models_module.CampaignRecipient(
+                    campaign_id=campaign.id,
+                    email="ok@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="sent",
+                ),
+                models_module.CampaignRecipient(
+                    campaign_id=campaign.id,
+                    email="fail1@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="failed",
+                ),
+                models_module.CampaignRecipient(
+                    campaign_id=campaign.id,
+                    email="fail2@test.com",
+                    tracking_id=str(uuid.uuid4()),
+                    status="failed",
+                ),
+            ]
+        )
+        db.commit()
+
+        scheduler_module._finalize_campaign_status(db, campaign)
+        db.commit()
+        db.refresh(campaign)
+
+        assert campaign.sent_count == 1
+        assert campaign.status == "completed"
     finally:
         db.close()
 
