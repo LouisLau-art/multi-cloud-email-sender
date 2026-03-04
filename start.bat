@@ -320,11 +320,9 @@ set "HAS_FRONTEND_IP=0"
 for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "$ips = Get-NetIPConfiguration -ErrorAction SilentlyContinue | ForEach-Object { $_.IPv4Address.IPAddress } | Where-Object { $_ -and $_ -ne '127.0.0.1' } | Sort-Object -Unique; $ips"`) do (
     set "HAS_FRONTEND_IP=1"
     echo [frontend]   -^> Network: http://%%I:5173/
-    echo [%date% %time%] [frontend]   -^> Network: http://%%I:5173/>>"%FRONTEND_LOG%"
 )
 if "%HAS_FRONTEND_IP%"=="0" (
     echo [frontend]   -^> Network: unavailable ^(no non-loopback IPv4 detected^)
-    echo [%date% %time%] [frontend]   -^> Network: unavailable ^(no non-loopback IPv4 detected^)>>"%FRONTEND_LOG%"
 )
 exit /b 0
 

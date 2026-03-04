@@ -60,7 +60,11 @@ def _init_database_with_recovery() -> None:
         if not _is_sqlite_corruption_error(exc):
             raise
 
-        logger.exception("Detected SQLite corruption at startup: %s", DB_PATH)
+        logger.error(
+            "Detected SQLite corruption at startup (%s): %s",
+            DB_PATH,
+            exc,
+        )
         engine.dispose()
         archived_paths = _archive_corrupted_sqlite_files(DB_PATH)
         logger.error("Corrupted SQLite files archived to: %s", archived_paths)
