@@ -6,9 +6,9 @@ echo ==========================================
 echo     Email System Start (Double Click)
 echo ==========================================
 echo.
-echo Running: start.bat
+echo Running: start.bat --temp-mode
 echo.
 
-call "%~dp0start.bat"
+call "%~dp0start.bat" --temp-mode
 
 exit /b %errorlevel%

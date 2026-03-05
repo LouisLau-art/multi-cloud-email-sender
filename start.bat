@@ -25,6 +25,8 @@ set "STOP_ONLY=0"
 set "SHOW_ACCESS_POPUP=1"
 set "ENABLE_QUICK_TUNNEL=1"
 set "ALLOW_TEMPORARY_TUNNEL_FALLBACK=1"
+set "PREFER_TEMP_TRACK_DOMAIN=0"
+set "TRACK_HEALTH_TIMEOUT_SECONDS=4"
 set "TUNNEL_START_TIMEOUT_SECONDS=25"
 set "TUNNEL_LOG=%LOG_DIR%\tunnel.log"
 set "TUNNEL_URL_FILE=%LOG_DIR%\track_domain.txt"
@@ -43,14 +45,17 @@ if /I "%~1"=="-k" (
     set "SHOW_ACCESS_POPUP=0"
 ) else if /I "%~1"=="--no-tunnel" (
     set "ENABLE_QUICK_TUNNEL=0"
+) else if /I "%~1"=="--temp-mode" (
+    set "PREFER_TEMP_TRACK_DOMAIN=1"
 ) else (
     echo [ERROR] Unknown option: %~1
-    echo Usage: %~n0 [-d] [-k] [-s] [--no-popup] [--no-tunnel]
+    echo Usage: %~n0 [-d] [-k] [-s] [--no-popup] [--no-tunnel] [--temp-mode]
     echo   -d  Start in daemon mode ^(do not follow logs^)
     echo   -k  Force-kill listeners on 8000/5173 before start
     echo   -s  Stop services on 8000/5173 and exit
     echo   --no-popup  Do not show startup access popup
     echo   --no-tunnel  Do not auto-start cloudflared quick tunnel
+    echo   --temp-mode  Skip fixed-domain check and always use quick tunnel
     exit /b 1
 )
 shift
@@ -218,6 +223,16 @@ pause
 exit /b 0
 
 :PrepareTrackingDomain
+if "%PREFER_TEMP_TRACK_DOMAIN%"=="1" (
+    if "%ENABLE_QUICK_TUNNEL%"=="0" (
+        echo [ERROR] --temp-mode requires tunnel enabled ^(remove --no-tunnel^).
+        exit /b 1
+    )
+    echo [Track] Temporary mode enabled. Skipping fixed-domain health check.
+    call :StartTunnelAndSyncTrackDomain
+    exit /b %errorlevel%
+)
+
 call :ReadCurrentTrackDomain
 if defined CURRENT_TRACK_DOMAIN (
     echo [Track] Current track_domain: %CURRENT_TRACK_DOMAIN%
@@ -290,7 +305,7 @@ exit /b %errorlevel%
 :CheckTrackDomainHealth
 set "TRACK_DOMAIN_INPUT=%~1"
 if not defined TRACK_DOMAIN_INPUT exit /b 1
-powershell -NoProfile -Command "try{[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12}catch{}; $base=$env:TRACK_DOMAIN_INPUT.Trim().TrimEnd('/'); if([string]::IsNullOrWhiteSpace($base)){exit 1}; $url=$base + '/api/track/open/ping-test'; try{$r=Invoke-WebRequest -UseBasicParsing -Method Get -Uri $url -TimeoutSec 10; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
+powershell -NoProfile -Command "try{[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12}catch{}; $base=$env:TRACK_DOMAIN_INPUT.Trim().TrimEnd('/'); if([string]::IsNullOrWhiteSpace($base)){exit 1}; $url=$base + '/api/track/open/ping-test'; try{$r=Invoke-WebRequest -UseBasicParsing -Method Get -Uri $url -TimeoutSec %TRACK_HEALTH_TIMEOUT_SECONDS%; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
 exit /b %errorlevel%
 
 :PrintTrackingDiagnostics
