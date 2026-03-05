@@ -169,7 +169,11 @@ if errorlevel 1 (
     exit /b 1
 )
 
-call :StartTunnelAndSyncTrackDomain
+call :PrepareTrackingDomain
+if errorlevel 1 (
+    pause
+    exit /b 1
+)
 
 echo [Start] Launching frontend...
 start "Email Frontend" /MIN cmd /c "cd /d ""%ROOT_DIR%\frontend"" && npm run dev -- --host >> ""%FRONTEND_LOG%"" 2>&1"
@@ -213,18 +217,34 @@ pause
 exit /b 0
 
 :ResolveCloudflared
+if exist "%ROOT_DIR%\cloudflared.exe" (
+    set "CLOUDFLARED_EXE=%ROOT_DIR%\cloudflared.exe"
+    exit /b 0
+)
+if exist "%ROOT_DIR%\cloudflare.exe" (
+    set "CLOUDFLARED_EXE=%ROOT_DIR%\cloudflare.exe"
+    exit /b 0
+)
 if exist "%USERPROFILE%\Downloads\cloudflared.exe" (
     set "CLOUDFLARED_EXE=%USERPROFILE%\Downloads\cloudflared.exe"
+    exit /b 0
+)
+if exist "%USERPROFILE%\Downloads\cloudflare.exe" (
+    set "CLOUDFLARED_EXE=%USERPROFILE%\Downloads\cloudflare.exe"
     exit /b 0
 )
 for /f "usebackq delims=" %%I in (`where cloudflared 2^>nul`) do (
     set "CLOUDFLARED_EXE=%%I"
     exit /b 0
 )
+for /f "usebackq delims=" %%I in (`where cloudflare 2^>nul`) do (
+    set "CLOUDFLARED_EXE=%%I"
+    exit /b 0
+)
 exit /b 1
 
 :StopTunnel
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe'\" | Where-Object { $_.CommandLine -match 'tunnel\\s+--url\\s+http://localhost:8000' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe' OR Name='cloudflare.exe'\" | Where-Object { $_.CommandLine -match 'tunnel\\s+--url\\s+http://localhost:8000' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
 exit /b 0
 
 :WaitForTunnelUrl
@@ -241,6 +261,71 @@ set /a TUNNEL_COUNT+=1
 timeout /t 1 /nobreak >nul
 goto :WaitForTunnelUrlLoop
 
+:PrepareTrackingDomain
+call :ReadCurrentTrackDomain
+if defined CURRENT_TRACK_DOMAIN (
+    echo [Track] Current track_domain: %CURRENT_TRACK_DOMAIN%
+) else (
+    echo [Track] Current track_domain is empty.
+)
+
+call :IsFixedTrackDomain "%CURRENT_TRACK_DOMAIN%"
+if errorlevel 1 (
+    if "%ENABLE_QUICK_TUNNEL%"=="0" (
+        echo [Tunnel] Auto quick tunnel disabled by flag.
+        echo [Track] No fixed track_domain detected. Public tracking readiness check skipped.
+        exit /b 0
+    )
+    call :StartTunnelAndSyncTrackDomain
+    exit /b %errorlevel%
+)
+
+echo [Track] Fixed track_domain detected. Verifying public tracking endpoint...
+call :CheckTrackDomainHealth "%CURRENT_TRACK_DOMAIN%"
+if errorlevel 1 (
+    echo [ERROR] Fixed track_domain is unreachable: %CURRENT_TRACK_DOMAIN%
+    echo [ERROR] Startup aborted to avoid sending with broken open/click tracking.
+    call :CheckCloudflaredService
+    if errorlevel 2 (
+        echo [HINT] cloudflared service exists but is not running.
+        echo [HINT] Run in admin PowerShell: Start-Service cloudflared
+    ) else (
+        if errorlevel 1 (
+            echo [HINT] cloudflared service not found.
+            echo [HINT] If using named tunnel, install service once: cloudflared service install
+        )
+    )
+    exit /b 1
+)
+
+set "TUNNEL_URL=%CURRENT_TRACK_DOMAIN%"
+echo %TUNNEL_URL%>"%TUNNEL_URL_FILE%"
+echo [Track] Fixed track_domain is healthy.
+exit /b 0
+
+:ReadCurrentTrackDomain
+set "CURRENT_TRACK_DOMAIN="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "try{$v=(Invoke-RestMethod -Method Get -Uri 'http://localhost:8000/api/settings' -TimeoutSec 5).track_domain; if($null -ne $v){$v.ToString().Trim()}}catch{}"`) do (
+    set "CURRENT_TRACK_DOMAIN=%%I"
+)
+exit /b 0
+
+:IsFixedTrackDomain
+set "TRACK_DOMAIN_INPUT=%~1"
+if not defined TRACK_DOMAIN_INPUT exit /b 1
+powershell -NoProfile -Command "$v=$env:TRACK_DOMAIN_INPUT; if([string]::IsNullOrWhiteSpace($v)){exit 1}; $uri=$null; if(-not [Uri]::TryCreate($v,[UriKind]::Absolute,[ref]$uri)){exit 1}; $host=$uri.Host.ToLowerInvariant(); if($host -eq 'localhost' -or $host -eq '127.0.0.1'){exit 1}; if($host -eq 'trycloudflare.com' -or $host -like '*.trycloudflare.com'){exit 1}; if($host -match '^(10\\.|192\\.168\\.|127\\.)'){exit 1}; if($host -match '^172\\.(1[6-9]|2[0-9]|3[0-1])\\.') {exit 1}; exit 0" >nul 2>&1
+exit /b %errorlevel%
+
+:CheckTrackDomainHealth
+set "TRACK_DOMAIN_INPUT=%~1"
+if not defined TRACK_DOMAIN_INPUT exit /b 1
+powershell -NoProfile -Command "$base=$env:TRACK_DOMAIN_INPUT.Trim().TrimEnd('/'); if([string]::IsNullOrWhiteSpace($base)){exit 1}; $url=$base + '/api/track/open/ping-test'; try{$r=Invoke-WebRequest -UseBasicParsing -Method Get -Uri $url -TimeoutSec 10; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
+exit /b %errorlevel%
+
+:CheckCloudflaredService
+powershell -NoProfile -Command "try{$s=Get-Service cloudflared -ErrorAction Stop; if($s.Status -eq 'Running'){exit 0}else{exit 2}}catch{exit 1}" >nul 2>&1
+exit /b %errorlevel%
+
 :StartTunnelAndSyncTrackDomain
 if "%ENABLE_QUICK_TUNNEL%"=="0" (
     echo [Tunnel] Auto quick tunnel disabled.
@@ -249,9 +334,9 @@ if "%ENABLE_QUICK_TUNNEL%"=="0" (
 
 call :ResolveCloudflared
 if errorlevel 1 (
-    echo [WARN] cloudflared not found. Tracking domain will not auto-update.
-    echo [WARN] Put cloudflared.exe in %%USERPROFILE%%\Downloads or PATH.
-    exit /b 0
+    echo [WARN] cloudflared/cloudflare not found. Tracking domain will not auto-update.
+    echo [WARN] Put cloudflared.exe ^(or cloudflare.exe^) in project root, %%USERPROFILE%%\Downloads, or PATH.
+    exit /b 1
 )
 
 call :StopTunnel
@@ -263,7 +348,7 @@ call :WaitForTunnelUrl
 if errorlevel 1 (
     echo [WARN] Could not get quick tunnel URL within %TUNNEL_START_TIMEOUT_SECONDS%s.
     echo [WARN] Check: %TUNNEL_LOG%
-    exit /b 0
+    exit /b 1
 )
 
 echo [Tunnel] URL: %TUNNEL_URL%
@@ -272,7 +357,7 @@ echo %TUNNEL_URL%>"%TUNNEL_URL_FILE%"
 powershell -NoProfile -Command "$url='%TUNNEL_URL%'; $body=@{ track_domain=$url } | ConvertTo-Json; Invoke-RestMethod -Method Post -Uri 'http://localhost:8000/api/settings' -ContentType 'application/json' -Body $body | Out-Null" >nul 2>&1
 if errorlevel 1 (
     echo [WARN] Tunnel is up but failed to sync track_domain to backend settings.
-    exit /b 0
+    exit /b 1
 )
 echo [Tunnel] track_domain auto-updated.
 exit /b 0

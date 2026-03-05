@@ -6,9 +6,9 @@ echo ==========================================
 echo     Email System Start (Double Click)
 echo ==========================================
 echo.
-echo Running: start.bat --no-tunnel
+echo Running: start.bat
 echo.
 
-call "%~dp0start.bat" --no-tunnel
+call "%~dp0start.bat"
 
 exit /b %errorlevel%

@@ -2,22 +2,23 @@
 
 1）每天开机后如何启动
 - 双击 `start.bat`。
-- 等待出现以下提示：
+- 等待出现以下提示（两种模式其一）：
   - `App running.`
-  - `[Tunnel] URL: https://...trycloudflare.com`
-  - `[Tunnel] track_domain auto-updated.`
+  - 固定域名模式：`[Track] Fixed track_domain is healthy.`
+  - 临时隧道模式：`[Tunnel] URL: https://...trycloudflare.com`
+  - 临时隧道模式：`[Tunnel] track_domain auto-updated.`
 
 2）现在已经自动完成的事情
 - 自动启动后端（8000 端口）。
 - 自动启动前端（5173 端口）。
-- 自动启动 cloudflared 临时隧道。
-- 自动把新的隧道地址写入系统 `track_domain`。
+- 如果已配置固定 `track_domain`（非 `trycloudflare.com`）：启动时自动做公网可达性检查。
+- 如果固定 `track_domain` 不可达：启动会直接失败（防止在统计失效时继续发信）。
+- 仅在没有固定 `track_domain` 时，自动启动 cloudflared 临时隧道并回写 `track_domain`。
 
 3）宿主机或虚拟机重启后怎么办
 - 仍然只需要双击 `start.bat`。
-- 临时隧道域名每次可能变化，这是正常现象。
-- 不再需要手动执行：
-  - `cloudflared tunnel --url http://localhost:8000`
+- 如果你使用固定域名（例如 `https://track-dev.louisliu.fun`），域名不会变化。
+- 如果你使用临时隧道，域名每次可能变化，这是正常现象。
 
 4）如何停止服务
 - 运行：
@@ -30,5 +31,6 @@
 - 如果隧道启动失败，请查看日志：
   - `logs/tunnel.log`
 - 如果找不到 `cloudflared.exe`，请放到：
-  - `%USERPROFILE%\Downloads\cloudflared.exe`
-  或把 `cloudflared` 加到系统 PATH。
+  - 项目根目录：`cloudflared.exe`（或 `cloudflare.exe`）
+  - `%USERPROFILE%\Downloads\cloudflared.exe`（或 `cloudflare.exe`）
+  - 或把 `cloudflared/cloudflare` 加到系统 PATH。

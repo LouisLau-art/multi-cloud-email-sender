@@ -86,3 +86,13 @@ This repository contains a full-stack email marketing application designed for h
 1. **Attachments:** Implement `SendRawEmail` support for both providers to handle attachments.
 2. **Analytics:** Add open-tracking pixels.
 3. **Template Preview:** Add a UI feature to preview variable substitution before sending.
+
+## 7. Windows Startup & Tracking Domain Policy (Operational)
+- **Default launcher:** `01-启动系统.bat` must call `start.bat` directly (do not force `--no-tunnel`).
+- **Tracking domain readiness gate:** startup must verify tracking availability before frontend launch.
+  - If `settings.track_domain` is a fixed public domain (non-`trycloudflare.com`), `start.bat` must validate:
+    - `GET {track_domain}/api/track/open/ping-test` returns `200`.
+  - If validation fails, startup must **abort** to prevent sending with broken open/click tracking.
+- **Fallback mode:** only when no fixed public `track_domain` is configured, startup may use Cloudflare quick tunnel and auto-sync `track_domain`.
+- **Executable compatibility:** Windows startup scripts should support both `cloudflared.exe` and `cloudflare.exe` names (project root, `%USERPROFILE%\Downloads`, or `PATH`).
+- **Failure posture:** do not silently continue when tracking domain bootstrap fails; fail fast with actionable hints.
