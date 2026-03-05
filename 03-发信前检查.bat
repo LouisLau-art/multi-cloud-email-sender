@@ -46,9 +46,11 @@ echo.
 
 echo [4/5] Check public open tracking endpoint...
 set "OPEN_PING_URL=!TRACK_DOMAIN!/api/track/open/ping-test"
-powershell -NoProfile -Command "try{$u=$env:OPEN_PING_URL;$r=Invoke-WebRequest -UseBasicParsing -Method GET -Uri $u -TimeoutSec 10; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}"
+powershell -NoProfile -Command "try{[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12}catch{}; try{$u=$env:OPEN_PING_URL;$r=Invoke-WebRequest -UseBasicParsing -Method GET -Uri $u -TimeoutSec 10; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}"
 if errorlevel 1 (
     echo [FAIL] Endpoint not reachable: !OPEN_PING_URL!
+    echo [HINT] If your PowerShell is old, force TLS1.2 and retry:
+    echo        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     echo.
     pause
     exit /b 1

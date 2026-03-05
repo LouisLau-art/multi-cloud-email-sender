@@ -274,7 +274,7 @@ exit /b %errorlevel%
 :CheckTrackDomainHealth
 set "TRACK_DOMAIN_INPUT=%~1"
 if not defined TRACK_DOMAIN_INPUT exit /b 1
-powershell -NoProfile -Command "$base=$env:TRACK_DOMAIN_INPUT.Trim().TrimEnd('/'); if([string]::IsNullOrWhiteSpace($base)){exit 1}; $url=$base + '/api/track/open/ping-test'; try{$r=Invoke-WebRequest -UseBasicParsing -Method Get -Uri $url -TimeoutSec 10; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
+powershell -NoProfile -Command "try{[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12}catch{}; $base=$env:TRACK_DOMAIN_INPUT.Trim().TrimEnd('/'); if([string]::IsNullOrWhiteSpace($base)){exit 1}; $url=$base + '/api/track/open/ping-test'; try{$r=Invoke-WebRequest -UseBasicParsing -Method Get -Uri $url -TimeoutSec 10; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
 exit /b %errorlevel%
 
 :StartTunnelAndSyncTrackDomain
