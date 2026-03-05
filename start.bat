@@ -30,6 +30,7 @@ set "TRACK_HEALTH_TIMEOUT_SECONDS=4"
 set "TUNNEL_START_TIMEOUT_SECONDS=25"
 set "TUNNEL_LOG=%LOG_DIR%\tunnel.log"
 set "TUNNEL_URL_FILE=%LOG_DIR%\track_domain.txt"
+set "TRACK_DOMAIN_HISTORY_FILE=%LOG_DIR%\track_domain_history.csv"
 set "CLOUDFLARED_EXE="
 set "TUNNEL_URL="
 
@@ -66,6 +67,9 @@ if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
 if not exist "%BACKEND_LOG%" type nul > "%BACKEND_LOG%" 2>nul
 if not exist "%FRONTEND_LOG%" type nul > "%FRONTEND_LOG%" 2>nul
 if not exist "%TUNNEL_LOG%" type nul > "%TUNNEL_LOG%" 2>nul
+if not exist "%TRACK_DOMAIN_HISTORY_FILE%" (
+    (echo timestamp,source,from_domain,to_domain)>>"%TRACK_DOMAIN_HISTORY_FILE%" 2>nul
+)
 (echo ===== [%date% %time%] start.bat invoked =====)>>"%BACKEND_LOG%" 2>nul
 (echo ===== [%date% %time%] start.bat invoked =====)>>"%FRONTEND_LOG%" 2>nul
 (echo ===== [%date% %time%] start.bat invoked =====)>>"%TUNNEL_LOG%" 2>nul
@@ -366,12 +370,19 @@ if errorlevel 1 (
 echo [Tunnel] URL: %TUNNEL_URL%
 echo %TUNNEL_URL%>"%TUNNEL_URL_FILE%"
 
+set "PREV_TRACK_DOMAIN="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "try{$v=(Invoke-RestMethod -Method Get -Uri 'http://localhost:8000/api/settings' -TimeoutSec 5).track_domain; if($null -ne $v){$v.ToString().Trim()}}catch{}"`) do (
+    set "PREV_TRACK_DOMAIN=%%I"
+)
+
 powershell -NoProfile -Command "$url='%TUNNEL_URL%'; $body=@{ track_domain=$url } | ConvertTo-Json; Invoke-RestMethod -Method Post -Uri 'http://localhost:8000/api/settings' -ContentType 'application/json' -Body $body | Out-Null" >nul 2>&1
 if errorlevel 1 (
     echo [WARN] Tunnel is up but failed to sync track_domain to backend settings.
     exit /b 1
 )
 echo [Tunnel] track_domain auto-updated.
+call :AppendTrackDomainHistory "quick_tunnel" "%PREV_TRACK_DOMAIN%" "%TUNNEL_URL%"
+echo [Track] History saved: %TRACK_DOMAIN_HISTORY_FILE%
 exit /b 0
 
 :ResolveCloudflared
@@ -418,6 +429,20 @@ if !TUNNEL_COUNT! GEQ %TUNNEL_START_TIMEOUT_SECONDS% exit /b 1
 set /a TUNNEL_COUNT+=1
 timeout /t 1 /nobreak >nul
 goto :WaitForTunnelUrlLoop
+
+:AppendTrackDomainHistory
+set "H_SOURCE=%~1"
+set "H_FROM=%~2"
+set "H_TO=%~3"
+set "H_TS="
+for /f "usebackq delims=" %%I in (`powershell -NoProfile -Command "Get-Date -Format 'yyyy-MM-dd HH:mm:ss'"`) do (
+    set "H_TS=%%I"
+)
+if not exist "%TRACK_DOMAIN_HISTORY_FILE%" (
+    (echo timestamp,source,from_domain,to_domain)>>"%TRACK_DOMAIN_HISTORY_FILE%" 2>nul
+)
+(echo %H_TS%,%H_SOURCE%,%H_FROM%,%H_TO%)>>"%TRACK_DOMAIN_HISTORY_FILE%" 2>nul
+exit /b 0
 
 :WaitForPort
 set "PORT=%~1"
