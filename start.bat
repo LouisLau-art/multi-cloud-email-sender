@@ -57,12 +57,12 @@ goto ParseArgs
 
 :ArgsDone
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%"
-if not exist "%BACKEND_LOG%" type nul > "%BACKEND_LOG%"
-if not exist "%FRONTEND_LOG%" type nul > "%FRONTEND_LOG%"
-if not exist "%TUNNEL_LOG%" type nul > "%TUNNEL_LOG%"
-echo ===== [%date% %time%] start.bat invoked =====>>"%BACKEND_LOG%"
-echo ===== [%date% %time%] start.bat invoked =====>>"%FRONTEND_LOG%"
-echo ===== [%date% %time%] start.bat invoked =====>>"%TUNNEL_LOG%"
+if not exist "%BACKEND_LOG%" type nul > "%BACKEND_LOG%" 2>nul
+if not exist "%FRONTEND_LOG%" type nul > "%FRONTEND_LOG%" 2>nul
+if not exist "%TUNNEL_LOG%" type nul > "%TUNNEL_LOG%" 2>nul
+(echo ===== [%date% %time%] start.bat invoked =====)>>"%BACKEND_LOG%" 2>nul
+(echo ===== [%date% %time%] start.bat invoked =====)>>"%FRONTEND_LOG%" 2>nul
+(echo ===== [%date% %time%] start.bat invoked =====)>>"%TUNNEL_LOG%" 2>nul
 
 if "%STOP_ONLY%"=="1" (
     echo [Stop] Stopping listeners on ports 8000/5173 and tunnel...
@@ -291,7 +291,7 @@ if errorlevel 1 (
 )
 
 call :StopTunnel
-echo ===== [%date% %time%] tunnel start =====>>"%TUNNEL_LOG%"
+(echo ===== [%date% %time%] tunnel start =====)>>"%TUNNEL_LOG%" 2>nul
 echo [Tunnel] Launching cloudflared quick tunnel...
 start "Email Tunnel" /MIN cmd /c """%CLOUDFLARED_EXE%"" tunnel --url http://localhost:8000 >> ""%TUNNEL_LOG%"" 2>&1"
 
