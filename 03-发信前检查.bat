@@ -3,6 +3,7 @@ setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 
 set "EXPECTED_TRACK_DOMAIN=https://track-dev.louisliu.fun"
+set "TRACK_DOMAIN_MODE=AUTO"
 set "LOG_DIR=%~dp0logs"
 set "DIAG_LOG=%LOG_DIR%\precheck_diagnostics.log"
 if not exist "%LOG_DIR%" mkdir "%LOG_DIR%" >nul 2>&1
@@ -35,16 +36,45 @@ if not defined TRACK_DOMAIN (
 echo [INFO] track_domain: !TRACK_DOMAIN!
 echo.
 
-echo [3/5] Check track_domain value...
-if /I not "!TRACK_DOMAIN!"=="%EXPECTED_TRACK_DOMAIN%" (
-    echo [FAIL] track_domain mismatch.
-    echo [MUST] %EXPECTED_TRACK_DOMAIN%
-    echo [NOW ] !TRACK_DOMAIN!
-    echo.
-    pause
-    exit /b 1
+echo [3/5] Check track_domain mode...
+set "TRACK_DOMAIN_OK=0"
+
+if /I "%TRACK_DOMAIN_MODE%"=="FIXED" (
+    if /I "!TRACK_DOMAIN!"=="%EXPECTED_TRACK_DOMAIN%" (
+        set "TRACK_DOMAIN_OK=1"
+    )
+    if "!TRACK_DOMAIN_OK!"=="0" (
+        echo [FAIL] Fixed domain mismatch.
+        echo [MUST] %EXPECTED_TRACK_DOMAIN%
+        echo [NOW ] !TRACK_DOMAIN!
+        echo.
+        pause
+        exit /b 1
+    )
+    echo [OK] Fixed track_domain is correct.
+) else (
+    if /I "!TRACK_DOMAIN!"=="%EXPECTED_TRACK_DOMAIN%" (
+        set "TRACK_DOMAIN_OK=1"
+    )
+    if "!TRACK_DOMAIN_OK!"=="0" (
+        powershell -NoProfile -Command "try{$u=$env:TRACK_DOMAIN; $h=([Uri]$u).DnsSafeHost.ToLowerInvariant(); if($h.EndsWith('.trycloudflare.com')){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
+        if not errorlevel 1 set "TRACK_DOMAIN_OK=1"
+    )
+    if "!TRACK_DOMAIN_OK!"=="0" (
+        echo [FAIL] track_domain is neither fixed expected domain nor trycloudflare temporary domain.
+        echo [EXPECTED FIXED] %EXPECTED_TRACK_DOMAIN%
+        echo [NOW          ] !TRACK_DOMAIN!
+        echo.
+        pause
+        exit /b 1
+    )
+    powershell -NoProfile -Command "try{$u=$env:TRACK_DOMAIN; $h=([Uri]$u).DnsSafeHost.ToLowerInvariant(); if($h.EndsWith('.trycloudflare.com')){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
+    if not errorlevel 1 (
+        echo [OK] Temporary track_domain detected ^(trycloudflare^).
+    ) else (
+        echo [OK] Fixed track_domain detected.
+    )
 )
-echo [OK] track_domain is correct.
 echo.
 
 echo [4/5] Check public open tracking endpoint...
@@ -63,20 +93,20 @@ echo [OK] Public endpoint is reachable (200).
 echo.
 
 echo [5/5] Check cloudflared service...
-powershell -NoProfile -Command "try{$s=Get-Service cloudflared -ErrorAction Stop; if($s.Status -eq 'Running'){exit 0}else{exit 2}}catch{exit 1}"
+powershell -NoProfile -Command "try{$svc=Get-Service cloudflared -ErrorAction SilentlyContinue; $hasSvc=$false; $svcRunning=$false; if($svc){$hasSvc=$true; if($svc.Status -eq 'Running'){$svcRunning=$true}}; $proc=Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe' OR Name='cloudflare.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -match 'tunnel\\s+--url\\s+http://localhost:8000' } | Select-Object -First 1; if($svcRunning -or $proc){exit 0}; if($hasSvc){exit 2}else{exit 1}}catch{exit 1}"
 if errorlevel 2 (
-    echo [FAIL] cloudflared service is installed but not running.
+    echo [FAIL] cloudflared service exists but is not running, and no quick tunnel process detected.
     echo.
     pause
     exit /b 1
 )
 if errorlevel 1 (
-    echo [FAIL] cloudflared service not found.
+    echo [FAIL] cloudflared service/process not found.
     echo.
     pause
     exit /b 1
 )
-echo [OK] cloudflared service is running.
+echo [OK] cloudflared service or quick tunnel process is running.
 echo.
 
 echo ==========================================

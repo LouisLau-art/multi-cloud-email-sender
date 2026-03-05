@@ -24,6 +24,7 @@ set "DAEMON_MODE=0"
 set "STOP_ONLY=0"
 set "SHOW_ACCESS_POPUP=1"
 set "ENABLE_QUICK_TUNNEL=1"
+set "ALLOW_TEMPORARY_TUNNEL_FALLBACK=1"
 set "TUNNEL_START_TIMEOUT_SECONDS=25"
 set "TUNNEL_LOG=%LOG_DIR%\tunnel.log"
 set "TUNNEL_URL_FILE=%LOG_DIR%\track_domain.txt"
@@ -239,7 +240,21 @@ echo [Track] Fixed track_domain detected. Verifying public tracking endpoint...
 call :CheckTrackDomainHealth "%CURRENT_TRACK_DOMAIN%"
 if errorlevel 1 (
     echo [ERROR] Fixed track_domain is unreachable: %CURRENT_TRACK_DOMAIN%
-    echo [ERROR] Startup aborted to avoid sending with broken open/click tracking.
+    if "%ALLOW_TEMPORARY_TUNNEL_FALLBACK%"=="1" (
+        if "%ENABLE_QUICK_TUNNEL%"=="1" (
+            echo [WARN] Fixed domain unavailable. Falling back to quick tunnel temporarily...
+            call :StartTunnelAndSyncTrackDomain
+            if errorlevel 1 (
+                echo [ERROR] Quick tunnel fallback also failed.
+                call :PrintTrackingDiagnostics "%CURRENT_TRACK_DOMAIN%"
+                exit /b 1
+            )
+            exit /b 0
+        )
+        echo [ERROR] Startup aborted because --no-tunnel disables fallback.
+    ) else (
+        echo [ERROR] Startup aborted to avoid sending with broken open/click tracking.
+    )
     powershell -NoProfile -Command "try{$s=Get-Service cloudflared -ErrorAction Stop; if($s.Status -eq 'Running'){exit 0}else{exit 2}}catch{exit 1}" >nul 2>&1
     if errorlevel 2 (
         echo [HINT] cloudflared service exists but is not running.
