@@ -285,7 +285,7 @@ call :CheckTrackDomainHealth "%CURRENT_TRACK_DOMAIN%"
 if errorlevel 1 (
     echo [ERROR] Fixed track_domain is unreachable: %CURRENT_TRACK_DOMAIN%
     echo [ERROR] Startup aborted to avoid sending with broken open/click tracking.
-    call :CheckCloudflaredService
+    powershell -NoProfile -Command "try{$s=Get-Service cloudflared -ErrorAction Stop; if($s.Status -eq 'Running'){exit 0}else{exit 2}}catch{exit 1}" >nul 2>&1
     if errorlevel 2 (
         echo [HINT] cloudflared service exists but is not running.
         echo [HINT] Run in admin PowerShell: Start-Service cloudflared
@@ -313,17 +313,13 @@ exit /b 0
 :IsFixedTrackDomain
 set "TRACK_DOMAIN_INPUT=%~1"
 if not defined TRACK_DOMAIN_INPUT exit /b 1
-powershell -NoProfile -Command "$v=$env:TRACK_DOMAIN_INPUT; if([string]::IsNullOrWhiteSpace($v)){exit 1}; $uri=$null; if(-not [Uri]::TryCreate($v,[UriKind]::Absolute,[ref]$uri)){exit 1}; $host=$uri.Host.ToLowerInvariant(); if($host -eq 'localhost' -or $host -eq '127.0.0.1'){exit 1}; if($host -eq 'trycloudflare.com' -or $host -like '*.trycloudflare.com'){exit 1}; if($host -match '^(10\\.|192\\.168\\.|127\\.)'){exit 1}; if($host -match '^172\\.(1[6-9]|2[0-9]|3[0-1])\\.') {exit 1}; exit 0" >nul 2>&1
+powershell -NoProfile -Command "$v=$env:TRACK_DOMAIN_INPUT; try { if([string]::IsNullOrWhiteSpace($v)){exit 1}; $uri=$null; if(-not [Uri]::TryCreate($v,[UriKind]::Absolute,[ref]$uri)){exit 1}; $domainHost=$uri.DnsSafeHost.ToLowerInvariant(); if($domainHost -eq 'localhost' -or $domainHost -eq '127.0.0.1'){exit 1}; if($domainHost -eq 'trycloudflare.com' -or $domainHost.EndsWith('.trycloudflare.com')){exit 1}; $ip=$null; if([System.Net.IPAddress]::TryParse($domainHost, [ref]$ip)){ if($ip.AddressFamily -eq [System.Net.Sockets.AddressFamily]::InterNetwork){ $b=$ip.GetAddressBytes(); if($b[0] -eq 10 -or $b[0] -eq 127){exit 1}; if($b[0] -eq 192 -and $b[1] -eq 168){exit 1}; if($b[0] -eq 172 -and $b[1] -ge 16 -and $b[1] -le 31){exit 1}; } }; exit 0 } catch { exit 1 }" >nul 2>&1
 exit /b %errorlevel%
 
 :CheckTrackDomainHealth
 set "TRACK_DOMAIN_INPUT=%~1"
 if not defined TRACK_DOMAIN_INPUT exit /b 1
 powershell -NoProfile -Command "$base=$env:TRACK_DOMAIN_INPUT.Trim().TrimEnd('/'); if([string]::IsNullOrWhiteSpace($base)){exit 1}; $url=$base + '/api/track/open/ping-test'; try{$r=Invoke-WebRequest -UseBasicParsing -Method Get -Uri $url -TimeoutSec 10; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
-exit /b %errorlevel%
-
-:CheckCloudflaredService
-powershell -NoProfile -Command "try{$s=Get-Service cloudflared -ErrorAction Stop; if($s.Status -eq 'Running'){exit 0}else{exit 2}}catch{exit 1}" >nul 2>&1
 exit /b %errorlevel%
 
 :StartTunnelAndSyncTrackDomain
