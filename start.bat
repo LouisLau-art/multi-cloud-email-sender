@@ -146,15 +146,15 @@ if "%FORCE_KILL%"=="1" (
     call :StopTunnel
 )
 
-call :EnsurePortFree 8000
-if errorlevel 1 (
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$p = Get-NetTCPConnection -State Listen -LocalPort 8000 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess; if($p){$p}"`) do (
+    echo [ERROR] Port 8000 is in use by PID %%P.
     echo Use -k to force-kill the process currently occupying port 8000.
     pause
     exit /b 1
 )
 
-call :EnsurePortFree 5173
-if errorlevel 1 (
+for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$p = Get-NetTCPConnection -State Listen -LocalPort 5173 -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess; if($p){$p}"`) do (
+    echo [ERROR] Port 5173 is in use by PID %%P.
     echo Use -k to force-kill the process currently occupying port 5173.
     pause
     exit /b 1
@@ -359,14 +359,6 @@ if !TUNNEL_COUNT! GEQ %TUNNEL_START_TIMEOUT_SECONDS% exit /b 1
 set /a TUNNEL_COUNT+=1
 timeout /t 1 /nobreak >nul
 goto :WaitForTunnelUrlLoop
-
-:EnsurePortFree
-set "PORT=%~1"
-for /f "usebackq delims=" %%P in (`powershell -NoProfile -Command "$p = Get-NetTCPConnection -State Listen -LocalPort %PORT% -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty OwningProcess; if($p){$p}"`) do (
-    echo [ERROR] Port %PORT% is in use by PID %%P.
-    exit /b 1
-)
-exit /b 0
 
 :WaitForPort
 set "PORT=%~1"
