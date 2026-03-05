@@ -291,6 +291,8 @@ if errorlevel 1 (
 )
 
 call :StopTunnel
+del "%TUNNEL_LOG%" >nul 2>&1
+type nul > "%TUNNEL_LOG%" 2>nul
 (echo ===== [%date% %time%] tunnel start =====)>>"%TUNNEL_LOG%" 2>nul
 echo [Tunnel] Launching cloudflared quick tunnel...
 start "Email Tunnel" /MIN cmd /c """%CLOUDFLARED_EXE%"" tunnel --url http://localhost:8000 >> ""%TUNNEL_LOG%"" 2>&1"
