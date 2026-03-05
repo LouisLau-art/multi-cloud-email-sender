@@ -250,6 +250,7 @@ if errorlevel 1 (
             echo [HINT] If using named tunnel, install service once: cloudflared service install
         )
     )
+    call :PrintTrackingDiagnostics "%CURRENT_TRACK_DOMAIN%"
     exit /b 1
 )
 
@@ -276,6 +277,34 @@ set "TRACK_DOMAIN_INPUT=%~1"
 if not defined TRACK_DOMAIN_INPUT exit /b 1
 powershell -NoProfile -Command "try{[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12}catch{}; $base=$env:TRACK_DOMAIN_INPUT.Trim().TrimEnd('/'); if([string]::IsNullOrWhiteSpace($base)){exit 1}; $url=$base + '/api/track/open/ping-test'; try{$r=Invoke-WebRequest -UseBasicParsing -Method Get -Uri $url -TimeoutSec 10; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}" >nul 2>&1
 exit /b %errorlevel%
+
+:PrintTrackingDiagnostics
+set "TRACK_DOMAIN_INPUT=%~1"
+set "TRACK_PING_URL=%TRACK_DOMAIN_INPUT%/api/track/open/ping-test"
+echo.
+echo [DIAG] ===== Tracking Diagnostics =====
+echo [DIAG] track_domain: %TRACK_DOMAIN_INPUT%
+echo [DIAG] ping_url: %TRACK_PING_URL%
+
+echo [DIAG] 1/5 Local backend ping ^(localhost:8000^):
+powershell -NoProfile -Command "try{$r=Invoke-WebRequest -UseBasicParsing -Uri 'http://localhost:8000/api/track/open/ping-test' -TimeoutSec 5; Write-Output ('StatusCode=' + $r.StatusCode)}catch{Write-Output ('Error=' + $_.Exception.Message)}"
+
+echo [DIAG] 2/5 DNS resolve:
+powershell -NoProfile -Command "$u=$env:TRACK_DOMAIN_INPUT; try{$h=([Uri]$u).DnsSafeHost}catch{$h=''}; if([string]::IsNullOrWhiteSpace($h)){Write-Output 'HostParseError'} else { nslookup $h 2>&1 }"
+
+echo [DIAG] 3/5 TCP 443 connectivity:
+powershell -NoProfile -Command "$u=$env:TRACK_DOMAIN_INPUT; try{$h=([Uri]$u).DnsSafeHost}catch{$h=''}; if([string]::IsNullOrWhiteSpace($h)){Write-Output 'HostParseError'} else { try{$t=Test-NetConnection -ComputerName $h -Port 443 -WarningAction SilentlyContinue; Write-Output ('TcpTestSucceeded=' + $t.TcpTestSucceeded); if($t.RemoteAddress){Write-Output ('RemoteAddress=' + $t.RemoteAddress)}}catch{Write-Output ('Error=' + $_.Exception.Message)} }"
+
+echo [DIAG] 4/5 Public HTTPS ping:
+powershell -NoProfile -Command "try{[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12}catch{}; $u=$env:TRACK_PING_URL; try{$r=Invoke-WebRequest -UseBasicParsing -Uri $u -TimeoutSec 10; Write-Output ('StatusCode=' + $r.StatusCode)}catch{Write-Output ('Error=' + $_.Exception.Message)}"
+
+echo [DIAG] 5/5 cloudflared service:
+powershell -NoProfile -Command "try{$s=Get-Service cloudflared -ErrorAction Stop; Write-Output ('Status=' + $s.Status)}catch{Write-Output 'Status=NOT_FOUND'}"
+powershell -NoProfile -Command "try{Get-CimInstance Win32_Service -Filter \"Name='cloudflared'\" | Select-Object Name,State,PathName | Format-List}catch{}"
+
+echo [DIAG] ===== End Diagnostics =====
+echo.
+exit /b 0
 
 :StartTunnelAndSyncTrackDomain
 if "%ENABLE_QUICK_TUNNEL%"=="0" (
