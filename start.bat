@@ -216,51 +216,6 @@ echo Use %SCRIPT_NAME% -s to stop services.
 pause
 exit /b 0
 
-:ResolveCloudflared
-if exist "%ROOT_DIR%\cloudflared.exe" (
-    set "CLOUDFLARED_EXE=%ROOT_DIR%\cloudflared.exe"
-    exit /b 0
-)
-if exist "%ROOT_DIR%\cloudflare.exe" (
-    set "CLOUDFLARED_EXE=%ROOT_DIR%\cloudflare.exe"
-    exit /b 0
-)
-if exist "%USERPROFILE%\Downloads\cloudflared.exe" (
-    set "CLOUDFLARED_EXE=%USERPROFILE%\Downloads\cloudflared.exe"
-    exit /b 0
-)
-if exist "%USERPROFILE%\Downloads\cloudflare.exe" (
-    set "CLOUDFLARED_EXE=%USERPROFILE%\Downloads\cloudflare.exe"
-    exit /b 0
-)
-for /f "usebackq delims=" %%I in (`where cloudflared 2^>nul`) do (
-    set "CLOUDFLARED_EXE=%%I"
-    exit /b 0
-)
-for /f "usebackq delims=" %%I in (`where cloudflare 2^>nul`) do (
-    set "CLOUDFLARED_EXE=%%I"
-    exit /b 0
-)
-exit /b 1
-
-:StopTunnel
-powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe' OR Name='cloudflare.exe'\" | Where-Object { $_.CommandLine -match 'tunnel\\s+--url\\s+http://localhost:8000' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
-exit /b 0
-
-:WaitForTunnelUrl
-set "TUNNEL_URL="
-set /a TUNNEL_COUNT=0
-
-:WaitForTunnelUrlLoop
-for /f "usebackq delims=" %%U in (`powershell -NoProfile -Command "$m = Select-String -Path '%TUNNEL_LOG%' -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' -AllMatches | Select-Object -Last 1; if($m){$m.Matches[0].Value}"`) do (
-    set "TUNNEL_URL=%%U"
-)
-if defined TUNNEL_URL exit /b 0
-if !TUNNEL_COUNT! GEQ %TUNNEL_START_TIMEOUT_SECONDS% exit /b 1
-set /a TUNNEL_COUNT+=1
-timeout /t 1 /nobreak >nul
-goto :WaitForTunnelUrlLoop
-
 :PrepareTrackingDomain
 call :ReadCurrentTrackDomain
 if defined CURRENT_TRACK_DOMAIN (
@@ -357,6 +312,51 @@ if errorlevel 1 (
 )
 echo [Tunnel] track_domain auto-updated.
 exit /b 0
+
+:ResolveCloudflared
+if exist "%ROOT_DIR%\cloudflared.exe" (
+    set "CLOUDFLARED_EXE=%ROOT_DIR%\cloudflared.exe"
+    exit /b 0
+)
+if exist "%ROOT_DIR%\cloudflare.exe" (
+    set "CLOUDFLARED_EXE=%ROOT_DIR%\cloudflare.exe"
+    exit /b 0
+)
+if exist "%USERPROFILE%\Downloads\cloudflared.exe" (
+    set "CLOUDFLARED_EXE=%USERPROFILE%\Downloads\cloudflared.exe"
+    exit /b 0
+)
+if exist "%USERPROFILE%\Downloads\cloudflare.exe" (
+    set "CLOUDFLARED_EXE=%USERPROFILE%\Downloads\cloudflare.exe"
+    exit /b 0
+)
+for /f "usebackq delims=" %%I in (`where cloudflared 2^>nul`) do (
+    set "CLOUDFLARED_EXE=%%I"
+    exit /b 0
+)
+for /f "usebackq delims=" %%I in (`where cloudflare 2^>nul`) do (
+    set "CLOUDFLARED_EXE=%%I"
+    exit /b 0
+)
+exit /b 1
+
+:StopTunnel
+powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe' OR Name='cloudflare.exe'\" | Where-Object { $_.CommandLine -match 'tunnel\\s+--url\\s+http://localhost:8000' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+exit /b 0
+
+:WaitForTunnelUrl
+set "TUNNEL_URL="
+set /a TUNNEL_COUNT=0
+
+:WaitForTunnelUrlLoop
+for /f "usebackq delims=" %%U in (`powershell -NoProfile -Command "$m = Select-String -Path '%TUNNEL_LOG%' -Pattern 'https://[a-z0-9-]+\.trycloudflare\.com' -AllMatches | Select-Object -Last 1; if($m){$m.Matches[0].Value}"`) do (
+    set "TUNNEL_URL=%%U"
+)
+if defined TUNNEL_URL exit /b 0
+if !TUNNEL_COUNT! GEQ %TUNNEL_START_TIMEOUT_SECONDS% exit /b 1
+set /a TUNNEL_COUNT+=1
+timeout /t 1 /nobreak >nul
+goto :WaitForTunnelUrlLoop
 
 :EnsurePortFree
 set "PORT=%~1"
