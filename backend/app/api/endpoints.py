@@ -552,15 +552,42 @@ def delete_contact_list(id: int, db: Session = Depends(get_db)):
     if not contact_list:
         raise HTTPException(status_code=404, detail="Contact list not found")
 
-    referenced_campaigns = (
-        db.query(models.Campaign)
+    referenced_campaign_ids = [
+        campaign_id
+        for (campaign_id,) in db.query(models.Campaign.id)
         .filter(models.Campaign.list_id == id)
-        .count()
-    )
-    if referenced_campaigns > 0:
+        .all()
+    ]
+    campaigns_without_snapshot = referenced_campaign_ids.copy()
+
+    if referenced_campaign_ids:
+        snapshotted_campaign_ids = {
+            campaign_id
+            for (campaign_id,) in db.query(models.CampaignRecipient.campaign_id)
+            .filter(models.CampaignRecipient.campaign_id.in_(referenced_campaign_ids))
+            .distinct()
+            .all()
+        }
+        campaigns_without_snapshot = [
+            campaign_id
+            for campaign_id in referenced_campaign_ids
+            if campaign_id not in snapshotted_campaign_ids
+        ]
+
+    if campaigns_without_snapshot:
         raise HTTPException(
             status_code=409,
-            detail="Contact list is referenced by campaigns and cannot be deleted",
+            detail=(
+                "Contact list is referenced by campaigns without recipient snapshots "
+                "and cannot be deleted"
+            ),
+        )
+
+    if referenced_campaign_ids:
+        (
+            db.query(models.Campaign)
+            .filter(models.Campaign.id.in_(referenced_campaign_ids))
+            .update({models.Campaign.list_id: None}, synchronize_session=False)
         )
 
     try:

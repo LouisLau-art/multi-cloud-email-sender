@@ -7,6 +7,7 @@ from app.core.database import get_db
 import app.core.scheduler as scheduler_module
 import app.api.endpoints as endpoints_module
 from app.services.aliyun_service import AliyunService
+from app.services.campaign_service import CampaignService
 from app.services.campaign_service import ContactService
 from app.services.tencent_service import TencentService
 # Import Base directly from models to guarantee it has the tables registered
@@ -405,6 +406,73 @@ def test_delete_contact_list_returns_conflict_when_referenced_by_campaign():
 
     assert response.status_code == 409
     assert "referenced" in response.json()["detail"].lower()
+
+
+def test_delete_contact_list_succeeds_when_campaign_snapshot_exists():
+    db = TestingSessionLocal()
+    try:
+        template = models_module.EmailTemplate(
+            title="Snapshot Template",
+            subject="Hello",
+            body="<p>Hello</p>",
+            from_alias="Sender",
+        )
+        contact_list = models_module.ContactList(name="Snapshot List", total_count=1)
+        db.add_all([template, contact_list])
+        db.flush()
+
+        contact = models_module.Contact(
+            email="snapshot@example.com",
+            name="Snapshot User",
+            extra_vars="{}",
+            list_id=contact_list.id,
+        )
+        db.add(contact)
+        contact_list.total_count = 1
+        db.commit()
+
+        campaign = CampaignService.create_campaign(
+            db=db,
+            name="Snapshot Campaign",
+            template_id=template.id,
+            list_id=contact_list.id,
+            account_name="sender@example.com",
+            batch_size=100,
+            interval_minutes=15,
+        )
+        list_id = contact_list.id
+        campaign_id = campaign.id
+    finally:
+        db.close()
+
+    response = client.delete(f"/api/contacts/{list_id}")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "deleted"
+
+    db = TestingSessionLocal()
+    try:
+        refreshed_campaign = (
+            db.query(models_module.Campaign)
+            .filter(models_module.Campaign.id == campaign_id)
+            .first()
+        )
+        assert refreshed_campaign is not None
+        assert refreshed_campaign.list_id is None
+        assert (
+            db.query(models_module.ContactList)
+            .filter(models_module.ContactList.id == list_id)
+            .first()
+            is None
+        )
+        assert (
+            db.query(models_module.CampaignRecipient)
+            .filter(models_module.CampaignRecipient.campaign_id == campaign_id)
+            .count()
+            == 1
+        )
+    finally:
+        db.close()
 
 
 def test_aliyun_client_uses_singapore_endpoint():
