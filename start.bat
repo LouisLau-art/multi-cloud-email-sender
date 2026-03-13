@@ -353,6 +353,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
+call :DetectQuickTunnelBlockingConfig
+if errorlevel 1 (
+    echo [ERROR] Quick tunnel is blocked by an existing cloudflared config file:
+    echo [ERROR]   %QUICK_TUNNEL_BLOCKING_CONFIG%
+    echo [HINT] Cloudflare TryCloudflare quick tunnels are not supported while config.yaml/config.yml exists in .cloudflared.
+    echo [HINT] Rename that file temporarily, or use a fixed/named tunnel instead of quick tunnel.
+    exit /b 1
+)
+
 call :StopTunnel
 del "%TUNNEL_LOG%" >nul 2>&1
 type nul > "%TUNNEL_LOG%" 2>nul
@@ -364,6 +373,7 @@ call :WaitForTunnelUrl
 if errorlevel 1 (
     echo [WARN] Could not get quick tunnel URL within %TUNNEL_START_TIMEOUT_SECONDS%s.
     echo [WARN] Check: %TUNNEL_LOG%
+    powershell -NoProfile -Command "if (Test-Path '%TUNNEL_LOG%') { Get-Content '%TUNNEL_LOG%' -Tail 120 }"
     exit /b 1
 )
 
@@ -414,6 +424,18 @@ exit /b 1
 
 :StopTunnel
 powershell -NoProfile -Command "$ErrorActionPreference='SilentlyContinue'; Get-CimInstance Win32_Process -Filter \"Name='cloudflared.exe' OR Name='cloudflare.exe'\" | Where-Object { $_.CommandLine -match 'tunnel\\s+--url\\s+http://localhost:8000' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
+exit /b 0
+
+:DetectQuickTunnelBlockingConfig
+set "QUICK_TUNNEL_BLOCKING_CONFIG="
+if exist "%USERPROFILE%\.cloudflared\config.yml" (
+    set "QUICK_TUNNEL_BLOCKING_CONFIG=%USERPROFILE%\.cloudflared\config.yml"
+    exit /b 1
+)
+if exist "%USERPROFILE%\.cloudflared\config.yaml" (
+    set "QUICK_TUNNEL_BLOCKING_CONFIG=%USERPROFILE%\.cloudflared\config.yaml"
+    exit /b 1
+)
 exit /b 0
 
 :WaitForTunnelUrl
