@@ -2,12 +2,14 @@ import io
 import json
 import logging
 import re
+import time
 import uuid
 from datetime import datetime
 from typing import Iterable, Optional
 
 import pandas as pd
 from fastapi import HTTPException
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from ..models.models import (
@@ -24,6 +26,8 @@ logger = logging.getLogger(__name__)
 MAX_CSV_ROWS = 300_000
 _CSV_ENCODINGS = ("utf-8-sig", "gb18030", "gbk", "utf-16")
 _CSV_SEPARATORS = (",", "\t", ";")
+_SQLITE_LOCK_RETRY_ATTEMPTS = 3
+_SQLITE_LOCK_RETRY_DELAY_SECONDS = 0.5
 
 
 def _normalize_col(col: object) -> str:
@@ -146,7 +150,52 @@ def _read_candidate_df(file_content: bytes) -> Optional[pd.DataFrame]:
     return None
 
 
+def is_sqlite_locked_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "database is locked" in message or "database table is locked" in message
+
+
 class ContactService:
+    @staticmethod
+    def _persist_contacts(db: Session, df: pd.DataFrame, list_name: str):
+        var_columns = [col for col in df.columns if col.lower() != "emailaddr"]
+
+        contact_list = ContactList(name=list_name, total_count=0)
+        db.add(contact_list)
+        db.flush()
+
+        contacts = []
+        for _, row in df.iterrows():
+            extra_vars = {
+                key: str(row[key]).strip() if str(row[key]).strip() else ""
+                for key in var_columns
+            }
+            (
+                first_name,
+                middle_name,
+                last_name,
+                contact_name,
+            ) = _extract_name_fields(extra_vars)
+            contacts.append(
+                Contact(
+                    email=row["EmailAddr"],
+                    name=contact_name,
+                    first_name=first_name or None,
+                    middle_name=middle_name or None,
+                    last_name=last_name or None,
+                    extra_vars=json.dumps(extra_vars, ensure_ascii=False),
+                    list_id=contact_list.id,
+                )
+            )
+
+        for i in range(0, len(contacts), 1000):
+            db.bulk_save_objects(contacts[i : i + 1000])
+
+        contact_list.total_count = len(contacts)
+        db.commit()
+        db.refresh(contact_list)
+        return contact_list
+
     @staticmethod
     def process_csv(db: Session, file_content: bytes, list_name: str):
         df = _read_candidate_df(file_content)
@@ -175,47 +224,24 @@ class ContactService:
         if len(df) > MAX_CSV_ROWS:
             raise ValueError(f"CSV 行数超限，最多支持 {MAX_CSV_ROWS} 行")
 
-        var_columns = [col for col in df.columns if col.lower() != "emailaddr"]
+        for attempt in range(1, _SQLITE_LOCK_RETRY_ATTEMPTS + 1):
+            try:
+                return ContactService._persist_contacts(db, df, list_name)
+            except OperationalError as exc:
+                db.rollback()
+                if not is_sqlite_locked_error(exc) or attempt >= _SQLITE_LOCK_RETRY_ATTEMPTS:
+                    raise
 
-        try:
-            contact_list = ContactList(name=list_name, total_count=0)
-            db.add(contact_list)
-            db.flush()
-
-            contacts = []
-            for _, row in df.iterrows():
-                extra_vars = {
-                    key: str(row[key]).strip() if str(row[key]).strip() else ""
-                    for key in var_columns
-                }
-                (
-                    first_name,
-                    middle_name,
-                    last_name,
-                    contact_name,
-                ) = _extract_name_fields(extra_vars)
-                contacts.append(
-                    Contact(
-                        email=row["EmailAddr"],
-                        name=contact_name,
-                        first_name=first_name or None,
-                        middle_name=middle_name or None,
-                        last_name=last_name or None,
-                        extra_vars=json.dumps(extra_vars, ensure_ascii=False),
-                        list_id=contact_list.id,
-                    )
+                logger.warning(
+                    "SQLite locked during contact upload for list=%s, retry %s/%s",
+                    list_name,
+                    attempt,
+                    _SQLITE_LOCK_RETRY_ATTEMPTS,
                 )
-
-            for i in range(0, len(contacts), 1000):
-                db.bulk_save_objects(contacts[i : i + 1000])
-
-            contact_list.total_count = len(contacts)
-            db.commit()
-            db.refresh(contact_list)
-            return contact_list
-        except Exception:
-            db.rollback()
-            raise
+                time.sleep(_SQLITE_LOCK_RETRY_DELAY_SECONDS * attempt)
+            except Exception:
+                db.rollback()
+                raise
 
 
 class CampaignService:

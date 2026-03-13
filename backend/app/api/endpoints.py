@@ -19,6 +19,7 @@ from fastapi import (
 )
 from pydantic import BaseModel, Field
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from ..core.database import get_db
@@ -34,7 +35,11 @@ from ..core.security import (
 )
 from ..models import models
 from ..services.aliyun_service import AliyunService
-from ..services.campaign_service import CampaignService, ContactService
+from ..services.campaign_service import (
+    CampaignService,
+    ContactService,
+    is_sqlite_locked_error,
+)
 
 logger = logging.getLogger(__name__)
 # Admin auth is disabled for this deployment: UI opens directly without login.
@@ -517,6 +522,14 @@ async def upload_contacts(
     try:
         contact_list = ContactService.process_csv(db, content, list_name)
         return {"id": contact_list.id, "count": contact_list.total_count}
+    except OperationalError as e:
+        logger.exception("contacts/upload failed")
+        if is_sqlite_locked_error(e):
+            raise HTTPException(
+                status_code=503,
+                detail="数据库正忙，请稍后重试上传",
+            )
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("contacts/upload failed")
         raise HTTPException(status_code=400, detail=str(e))
@@ -538,8 +551,27 @@ def delete_contact_list(id: int, db: Session = Depends(get_db)):
     )
     if not contact_list:
         raise HTTPException(status_code=404, detail="Contact list not found")
-    db.delete(contact_list)
-    db.commit()
+
+    referenced_campaigns = (
+        db.query(models.Campaign)
+        .filter(models.Campaign.list_id == id)
+        .count()
+    )
+    if referenced_campaigns > 0:
+        raise HTTPException(
+            status_code=409,
+            detail="Contact list is referenced by campaigns and cannot be deleted",
+        )
+
+    try:
+        db.delete(contact_list)
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=409,
+            detail="Contact list is referenced by other records and cannot be deleted",
+        )
     return {"status": "deleted"}
 
 
@@ -771,46 +803,58 @@ def sync_templates(
                 )
                 res = AliyunService.query_templates(client)
                 count = 0
+                detail_failures = 0
                 if res.body.data and res.body.data.template:
                     for t in res.body.data.template:
-                        detail_res = AliyunService.desc_template(client, int(t.template_id))
-                        detail = detail_res.body
-                        existing = (
-                            db.query(models.EmailTemplate)
-                            .filter(
-                                models.EmailTemplate.provider == "aliyun",
-                                models.EmailTemplate.provider_id == str(t.template_id),
-                                models.EmailTemplate.account_id == account.id,
-                            )
-                            .first()
-                        )
-                        if not existing:
-                            db.add(
-                                models.EmailTemplate(
-                                    title=detail.template_name,
-                                    subject=detail.template_subject,
-                                    body=detail.template_text,
-                                    from_alias=account.from_alias
-                                    or (setting.from_alias if setting else None),
-                                    provider="aliyun",
-                                    provider_id=str(t.template_id),
-                                    account_id=account.id,
+                        try:
+                            detail_res = AliyunService.desc_template(client, int(t.template_id))
+                            detail = detail_res.body
+                            existing = (
+                                db.query(models.EmailTemplate)
+                                .filter(
+                                    models.EmailTemplate.provider == "aliyun",
+                                    models.EmailTemplate.provider_id == str(t.template_id),
+                                    models.EmailTemplate.account_id == account.id,
                                 )
+                                .first()
                             )
-                            count += 1
-                        else:
-                            existing.title = detail.template_name
-                            existing.subject = detail.template_subject
-                            existing.body = detail.template_text
-                            existing.from_alias = (
-                                existing.from_alias
-                                or account.from_alias
-                                or (setting.from_alias if setting else None)
+                            if not existing:
+                                db.add(
+                                    models.EmailTemplate(
+                                        title=detail.template_name,
+                                        subject=detail.template_subject,
+                                        body=detail.template_text,
+                                        from_alias=account.from_alias
+                                        or (setting.from_alias if setting else None),
+                                        provider="aliyun",
+                                        provider_id=str(t.template_id),
+                                        account_id=account.id,
+                                    )
+                                )
+                                count += 1
+                            else:
+                                existing.title = detail.template_name
+                                existing.subject = detail.template_subject
+                                existing.body = detail.template_text
+                                existing.from_alias = (
+                                    existing.from_alias
+                                    or account.from_alias
+                                    or (setting.from_alias if setting else None)
+                                )
+                        except Exception:
+                            detail_failures += 1
+                            logger.exception(
+                                "Failed to fetch Aliyun template detail template_id=%s account=%s",
+                                t.template_id,
+                                account.name,
                             )
-                messages.append(f"{account.name}: 阿里云同步 {count} 个")
-            except Exception:
+                sync_message = f"{account.name}: 阿里云同步 {count} 个"
+                if detail_failures:
+                    sync_message += f"，失败 {detail_failures} 个"
+                messages.append(sync_message)
+            except Exception as e:
                 logger.exception("Aliyun template sync failed for %s", account.name)
-                messages.append(f"{account.name}: 阿里云同步失败")
+                messages.append(f"{account.name}: 阿里云同步失败 ({e})")
             continue
 
         if not account.tencent_secret_id or not account.tencent_secret_key:
@@ -828,6 +872,7 @@ def sync_templates(
             data = json.loads(res.to_json_string())
             templates_list = data.get("TemplatesMetadata", [])
             count = 0
+            detail_failures = 0
             for t in templates_list:
                 template_id = t.get("TemplateID")
                 template_name = t.get("TemplateName")
@@ -875,15 +920,19 @@ def sync_templates(
                             or (setting.from_alias if setting else None)
                         )
                 except Exception:
+                    detail_failures += 1
                     logger.exception(
                         "Failed to fetch Tencent template detail template_id=%s account=%s",
                         template_id,
                         account.name,
                     )
-            messages.append(f"{account.name}: 腾讯云同步 {count} 个")
-        except Exception:
+            sync_message = f"{account.name}: 腾讯云同步 {count} 个"
+            if detail_failures:
+                sync_message += f"，失败 {detail_failures} 个"
+            messages.append(sync_message)
+        except Exception as e:
             logger.exception("Tencent template sync failed for %s", account.name)
-            messages.append(f"{account.name}: 腾讯云同步失败")
+            messages.append(f"{account.name}: 腾讯云同步失败 ({e})")
 
     db.commit()
     return {"message": " | ".join(messages)}

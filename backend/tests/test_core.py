@@ -1,10 +1,14 @@
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, StaticPool
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import sessionmaker
 from app.main import app
 from app.core.database import get_db
 import app.core.scheduler as scheduler_module
 import app.api.endpoints as endpoints_module
+from app.services.aliyun_service import AliyunService
+from app.services.campaign_service import ContactService
+from app.services.tencent_service import TencentService
 # Import Base directly from models to guarantee it has the tables registered
 from app.models.models import Base 
 import app.models.models as models_module 
@@ -330,6 +334,104 @@ def test_csv_parsing_tab_delimiter():
     # 验证变量是否解析正确 (这需要查库，或者信任 process_csv 的逻辑)
     # 我们可以通过发信日志侧面验证，但单元测试里很难 hook 日志。
     # 这里只要 200 OK 且 count=1，说明解析器至少没崩，且识别出了 EmailAddr。
+
+
+def test_contact_upload_retries_transient_sqlite_lock(monkeypatch):
+    db = TestingSessionLocal()
+    try:
+        db.query(models_module.Contact).delete()
+        db.query(models_module.ContactList).delete()
+        db.commit()
+
+        original_flush = db.flush
+        attempts = {"count": 0}
+
+        def flaky_flush(*args, **kwargs):
+            if attempts["count"] == 0:
+                attempts["count"] += 1
+                raise OperationalError(
+                    "INSERT INTO contact_lists (name, total_count, created_at) VALUES (?, ?, ?)",
+                    {},
+                    Exception("database is locked"),
+                )
+            return original_flush(*args, **kwargs)
+
+        monkeypatch.setattr(db, "flush", flaky_flush)
+
+        contact_list = ContactService.process_csv(
+            db,
+            b"EmailAddr,UserName\nretry@example.com,Retry User\n",
+            "Retry List",
+        )
+
+        assert contact_list.id is not None
+        assert contact_list.total_count == 1
+        assert (
+            db.query(models_module.ContactList)
+            .filter(models_module.ContactList.name == "Retry List")
+            .count()
+            == 1
+        )
+        assert (
+            db.query(models_module.Contact)
+            .filter(models_module.Contact.email == "retry@example.com")
+            .count()
+            == 1
+        )
+    finally:
+        db.close()
+
+
+def test_delete_contact_list_returns_conflict_when_referenced_by_campaign():
+    db = TestingSessionLocal()
+    try:
+        contact_list = models_module.ContactList(name="Referenced List", total_count=1)
+        db.add(contact_list)
+        db.flush()
+
+        campaign = models_module.Campaign(
+            name="Referenced Campaign",
+            list_id=contact_list.id,
+            account_name="sender@example.com",
+            status="pending",
+        )
+        db.add(campaign)
+        db.commit()
+        list_id = contact_list.id
+    finally:
+        db.close()
+
+    response = client.delete(f"/api/contacts/{list_id}")
+
+    assert response.status_code == 409
+    assert "referenced" in response.json()["detail"].lower()
+
+
+def test_aliyun_client_uses_singapore_endpoint():
+    client = AliyunService.create_client("test-id", "test-secret", "ap-southeast-1")
+    assert client._endpoint == "dm.ap-southeast-1.aliyuncs.com"
+
+
+def test_aliyun_client_rejects_unknown_region():
+    try:
+        AliyunService.create_client("test-id", "test-secret", "ap-unknown-1")
+        raise AssertionError("expected create_client to reject unknown Aliyun region")
+    except ValueError as exc:
+        assert "unsupported aliyun directmail region" in str(exc).lower()
+
+
+def test_tencent_client_uses_intl_endpoint_for_singapore():
+    client = TencentService.create_client("test-id", "test-secret", "ap-singapore")
+    assert client.profile.httpProfile.endpoint == "ses.intl.tencentcloudapi.com"
+    assert client.request.host == "ses.intl.tencentcloudapi.com"
+
+
+def test_tencent_client_rejects_unknown_region():
+    try:
+        TencentService.create_client("test-id", "test-secret", "ap-unknown-1")
+        raise AssertionError("expected create_client to reject unknown Tencent region")
+    except ValueError as exc:
+        assert "unsupported tencent ses region" in str(exc).lower()
 
 
 def test_start_campaign_requeues_unfinished_recipients(monkeypatch):

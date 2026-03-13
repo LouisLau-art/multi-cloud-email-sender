@@ -26,11 +26,14 @@ const Contacts = () => {
     }
   };
 
-  const handleDelete = (id) => {
-      api.delete(`/contacts/${id}`).then(() => {
-          message.success('列表已删除');
-          refresh();
-      });
+  const handleDelete = async (id) => {
+      try {
+        await contactApi.delete(id);
+        message.success('列表已删除');
+        refresh();
+      } catch (e) {
+        message.error('删除失败: ' + (e.response?.data?.detail || e.message));
+      }
   };
 
   const columns = [

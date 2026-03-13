@@ -6,12 +6,29 @@ import json
 import base64
 
 
+_SES_ENDPOINTS = {
+    "ap-guangzhou": "ses.tencentcloudapi.com",
+    "ap-hongkong": "ses.tencentcloudapi.com",
+    "ap-singapore": "ses.intl.tencentcloudapi.com",
+}
+
+
+def _resolve_ses_endpoint(region: str | None) -> str:
+    normalized = (region or "ap-hongkong").strip().lower()
+    if normalized not in _SES_ENDPOINTS:
+        raise ValueError(
+            "Unsupported Tencent SES region: "
+            f"{region}. Supported regions: {', '.join(sorted(_SES_ENDPOINTS))}"
+        )
+    return _SES_ENDPOINTS[normalized]
+
+
 class TencentService:
     @staticmethod
     def create_client(secret_id, secret_key, region):
         cred = credential.Credential(secret_id, secret_key)
         httpProfile = HttpProfile()
-        httpProfile.endpoint = "ses.tencentcloudapi.com"
+        httpProfile.endpoint = _resolve_ses_endpoint(region)
         clientProfile = ClientProfile()
         clientProfile.httpProfile = httpProfile
         return ses_client.SesClient(cred, region, clientProfile)

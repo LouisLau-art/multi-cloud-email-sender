@@ -5,6 +5,25 @@ from alibabacloud_dm20151123 import models as dm_20151123_models
 from alibabacloud_tea_util import models as util_models
 
 
+_DIRECTMAIL_ENDPOINTS = {
+    "cn-hangzhou": "dm.aliyuncs.com",
+    "ap-southeast-1": "dm.ap-southeast-1.aliyuncs.com",
+    "ap-southeast-2": "dm.ap-southeast-2.aliyuncs.com",
+    "us-west-1": "dm.ap-southeast-2.aliyuncs.com",
+    "eu-central-1": "dm.eu-central-1.aliyuncs.com",
+}
+
+
+def _resolve_directmail_endpoint(region_id: str | None) -> str:
+    normalized = (region_id or "cn-hangzhou").strip().lower()
+    if normalized not in _DIRECTMAIL_ENDPOINTS:
+        raise ValueError(
+            "Unsupported Aliyun DirectMail region: "
+            f"{region_id}. Supported regions: {', '.join(sorted(_DIRECTMAIL_ENDPOINTS))}"
+        )
+    return _DIRECTMAIL_ENDPOINTS[normalized]
+
+
 class AliyunService:
     @staticmethod
     def create_client(
@@ -19,7 +38,7 @@ class AliyunService:
             connect_timeout=10000,  # 10s
             protocol="HTTPS",
         )
-        config.endpoint = "dm.aliyuncs.com"
+        config.endpoint = _resolve_directmail_endpoint(region_id)
         return Dm20151123Client(config)
 
     @staticmethod
