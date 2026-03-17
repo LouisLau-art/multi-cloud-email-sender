@@ -2,7 +2,7 @@
 setlocal EnableExtensions EnableDelayedExpansion
 chcp 65001 >nul
 
-set "EXPECTED_TRACK_DOMAIN=https://track-dev.louisliu.fun"
+set "EXPECTED_TRACK_DOMAIN=https://track.louisliu.fun"
 set "TRACK_DOMAIN_MODE=AUTO"
 set "LOG_DIR=%~dp0logs"
 set "DIAG_LOG=%LOG_DIR%\precheck_diagnostics.log"

@@ -1,0 +1,21 @@
+$ORIGIN louisliu.fun.
+$TTL 600
+aliyundm 600 IN TXT "ef405421e8cfcb11b422"
+
+@ 600 IN TXT "v=spf1 include:qcloudmail.com ~all"
+
+aliyun-cn-hangzhou._domainkey 600 IN TXT "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCLz6Tt8wGQapxM+IbwEmRRfns7mcvouXYSXxVJa+wkiTpgpHDzi9ix1bjTImswQLQkOFZefzCmYu14m31zeYbimuQURssX12s2V/Lupawd+we9G5u+nOqZMspDZOY7ZmwUfZOBpfDyqNb9kgBYzZ3U2MxUcJDNSYjBdq6kmLz0fwIDAQAB"
+
+_dmarc 600 IN TXT "v=DMARC1;p=none;rua=mailto:dmarc_report@service.aliyun.com"
+
+@ 600 IN MX 1 mxbiz1.qq.com.
+
+qcloud._domainkey 600 IN TXT "v=DKIM1; k=rsa; p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCw/NQCs1TDlUXdWCUgbajcsPWPoxJD4nv3Jv5GQCotwpDcLrNxH3ORj3OsbWxMs8/swUJQZwZE8aAlgd5iFph6cCj6yWqGw0mfJV4FaGmke3dxYW4AiTacTcFpXkClQODBGp5G56Xd7MXcec1pFPVbKOwsJBt+kPMxjDYVw+E9mwIDAQAB"
+
+alidnscheck 600 IN TXT "2543a8d1d8324c5eb3c679e512971075"
+
+resend._domainkey 600 IN TXT "p=MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCBiQKBgQCUBnsmqgBSYaVg55QYNYTF03pHXkv/Nlza6lwJcWzkfid3RhipjwjnTuXHngQc1V3ONf9AsQ0xxbOSCKyEljiOYySmlfwb7w9sZOKyzr+jtDBxQf+Auuo0S+AIyzdl6Ek8tuN+XoQvwa0nzoyp9qvqF30X55EYH5i+NkXy80I3pwIDAQAB"
+
+send 600 IN MX 1 feedback-smtp.ap-northeast-1.amazonses.com.
+
+send 600 IN TXT "v=spf1 include:amazonses.com ~all"
